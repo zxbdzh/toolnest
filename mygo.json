@@ -1,0 +1,12 @@
+{
+  "name": "ToolNest",
+  "slug": "toolnest",
+  "identifier": "app.toolnest.desktop",
+  "version": "0.0.1",
+  "main": ".",
+  "out": "dist",
+  "windows": {
+    "displayName": "ToolNest",
+    "installDirName": "ToolNest"
+  }
+}

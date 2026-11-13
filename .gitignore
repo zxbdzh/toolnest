@@ -1,0 +1,16 @@
+/dist/
+/.local/
+*.exe
+*.syso
+*.log
+*.key
+*.pem
+*.pfx
+*.p12
+.env
+.env.*
+/docs/acceptance/
+/docs/releases/0.1.*.md
+/docs/requirements-interview.md
+/docs/implementation-plan.md
+/docs/integration-contract.md

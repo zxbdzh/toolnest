@@ -1,0 +1,193 @@
+name: Verified Windows release
+run-name: Verify and approve ${{ inputs.tag }}
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact vX.Y.Z tag matching packaging/VERSION
+        required: true
+        type: string
+
+permissions:
+  contents: read
+concurrency:
+  group: toolnest-production-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2025
+    environment: release-signing
+    outputs:
+      source-commit: ${{ steps.identity.outputs.commit }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: '1.27.4'
+          cache: false
+      - name: Validate exact tag and external credentials
+        id: identity
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          PUBLIC_KEY: ${{ vars.TOOLNEST_UPDATE_PUBLIC_KEY }}
+          UPDATE_KEY: ${{ secrets.TOOLNEST_UPDATE_PRIVATE_KEY }}
+          PFX_BASE64: ${{ secrets.TOOLNEST_AUTHENTICODE_PFX }}
+          PFX_PASSWORD: ${{ secrets.TOOLNEST_AUTHENTICODE_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content packaging/VERSION -Raw).Trim()
+          if ($env:RELEASE_TAG -cne "v$version") { throw 'Tag/VERSION mismatch.' }
+          $tag = git describe --exact-match --tags HEAD
+          if ($LASTEXITCODE -or $tag -cne $env:RELEASE_TAG) { throw 'An existing exact tag is required.' }
+          foreach ($name in 'PUBLIC_KEY','UPDATE_KEY','PFX_BASE64','PFX_PASSWORD') {
+            if (![Environment]::GetEnvironmentVariable($name)) { throw "Missing external credential: $name" }
+          }
+          $commit = git rev-parse HEAD
+          if ($LASTEXITCODE -or $commit -notmatch '^[a-f0-9]{40}$') { throw 'Source commit unavailable.' }
+          "commit=$commit" >> $env:GITHUB_OUTPUT
+          "PINNED_GO=$((Get-Command go.exe).Source)" >> $env:GITHUB_ENV
+      - name: Fetch exact MyGo and checksum-pinned build compiler
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:RUNNER_TEMP 'mygo'
+          git init $path
+          if ($LASTEXITCODE) { throw 'Framework directory creation failed.' }
+          git -C $path remote add origin https://github.com/egoist/mygo.git
+          if ($LASTEXITCODE) { throw 'Framework origin configuration failed.' }
+          git -C $path fetch --depth=1 origin 0d644f4aca24be8208d1b7d364d7c928fc2cb890
+          if ($LASTEXITCODE) { throw 'Pinned MyGo fetch failed.' }
+          git -C $path checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -or (git -C $path rev-parse HEAD) -cne '0d644f4aca24be8208d1b7d364d7c928fc2cb890') { throw 'Framework pin mismatch.' }
+          # 与固定 MyGo internal/nsis/nsis.go 一致；只解压编译工具，不安装任何软件。
+          $zip = Join-Path $env:RUNNER_TEMP 'nsis-3.13.zip'
+          Invoke-WebRequest 'https://github.com/egoist/mygo/releases/download/nsis-3.13/nsis-3.13.zip' -OutFile $zip
+          if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -cne 'BA63DFFC4410EE89193E1CB5A41989991BD77C61068DA17E3156D136B7B0B3D8') { throw 'NSIS checksum mismatch.' }
+          $compiler = Join-Path $env:RUNNER_TEMP 'nsis'
+          Expand-Archive -LiteralPath $zip -DestinationPath $compiler
+          "PINNED_NSIS=$(Join-Path $compiler 'nsis-3.13/makensis.exe')" >> $env:GITHUB_ENV
+          "PINNED_MYGO=$path" >> $env:GITHUB_ENV
+          $resourceTools = Join-Path $env:RUNNER_TEMP 'resource-tools'
+          $env:GOBIN = $resourceTools
+          go install github.com/akavel/rsrc@v0.10.2
+          if ($LASTEXITCODE) { throw 'Pinned Windows resource builder installation failed.' }
+          "TOOLNEST_RESOURCE_TOOL=$(Join-Path $resourceTools 'rsrc.exe')" >> $env:GITHUB_ENV
+      - name: Check, build, sign and verify all artifacts locally
+        shell: pwsh
+        env:
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.TOOLNEST_UPDATE_PRIVATE_KEY }}
+          PUBLIC_KEY: ${{ vars.TOOLNEST_UPDATE_PUBLIC_KEY }}
+          PFX_BASE64: ${{ secrets.TOOLNEST_AUTHENTICODE_PFX }}
+          PFX_PASSWORD: ${{ secrets.TOOLNEST_AUTHENTICODE_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pfx = Join-Path $env:RUNNER_TEMP 'toolnest-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx,[Convert]::FromBase64String($env:PFX_BASE64))
+          $cert = $null
+          try {
+            $pfxPassword = ConvertTo-SecureString $env:PFX_PASSWORD -AsPlainText -Force
+            $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pfxPassword
+            if (!$cert -or !$cert.HasPrivateKey) { throw 'Signing certificate unavailable.' }
+            $kit = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots'
+            $sdk = Get-ChildItem (Join-Path $kit.KitsRoot10 'bin') -Directory | Sort-Object Name -Descending | Select-Object -First 1
+            $signtool = Join-Path $sdk.FullName 'x64/signtool.exe'
+            $out = Join-Path $env:RUNNER_TEMP 'verified-release'
+            ./scripts/build.ps1 format -Go $env:PINNED_GO
+            ./scripts/build.ps1 vet -Go $env:PINNED_GO
+            ./scripts/build.ps1 test -Go $env:PINNED_GO
+            ./scripts/build.ps1 release -Go $env:PINNED_GO -MyGo $env:PINNED_MYGO -Repository $env:GITHUB_REPOSITORY -PublicKey $env:PUBLIC_KEY -Output $out -MakeNSIS $env:PINNED_NSIS -SignTool $signtool -CertificateThumbprint $cert.Thumbprint
+            ./scripts/build.ps1 verify -Go $env:PINNED_GO -Output $out -Repository $env:GITHUB_REPOSITORY -PublicKey $env:PUBLIC_KEY
+          } finally {
+            Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+            if ($cert) { Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue }
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verified-production-release
+          path: ${{ runner.temp }}/verified-release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: windows-2025
+    # 必须配置 required reviewers、禁止自审和管理员绕过；脚本读取 API 再核验。
+    environment: production-release
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.build.outputs.source-commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: '1.27.4'
+          cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: verified-production-release
+          path: ${{ runner.temp }}/publish
+      - name: Verify protected environment and source commit
+        shell: pwsh
+        env:
+          # 仅需目标仓库 Administration:read；不足以读取保护规则也必须关闭发布。
+          GH_TOKEN: ${{ secrets.TOOLNEST_ENVIRONMENT_AUDIT_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          EXPECTED_COMMIT: ${{ needs.build.outputs.source-commit }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (!$env:GH_TOKEN) { throw 'External environment-audit credential missing.' }
+          $raw = gh api "repos/$env:REPOSITORY/environments/production-release"
+          if ($LASTEXITCODE) { throw 'Cannot audit protected production environment.' }
+          $environment = ($raw -join "`n") | ConvertFrom-Json
+          $rules = @($environment.protection_rules | Where-Object type -eq 'required_reviewers')
+          if ($rules.Count -ne 1 -or @($rules[0].reviewers).Count -eq 0 -or $rules[0].prevent_self_review -ne $true -or $environment.can_admins_bypass -ne $false) { throw 'Manual reviewers, no self-review and no administrator bypass are mandatory.' }
+          $head = git rev-parse HEAD
+          $target = git rev-parse "$env:RELEASE_TAG^{commit}"
+          if ($LASTEXITCODE -or $head -cne $env:EXPECTED_COMMIT -or $target -cne $head) { throw 'Tag moved or source commit mismatch.' }
+      - name: Verify local artifacts, upload draft, reverify remote assets, publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLIC_KEY: ${{ vars.TOOLNEST_UPDATE_PUBLIC_KEY }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (!$env:PUBLIC_KEY) { throw 'Trusted production key missing.' }
+          $version = (Get-Content packaging/VERSION -Raw).Trim()
+          if ($env:RELEASE_TAG -cne "v$version") { throw 'Tag/VERSION mismatch.' }
+          $out = Join-Path $env:RUNNER_TEMP 'publish'
+          $go = (Get-Command go.exe).Source
+          ./scripts/build.ps1 verify -Go $go -Output $out -Repository $env:REPOSITORY -PublicKey $env:PUBLIC_KEY
+          $installer = Join-Path $out "ToolNest-Setup-$version-windows-amd64.exe"
+          if ((Get-AuthenticodeSignature -LiteralPath $installer).Status -ne 'Valid') { throw 'Production installer Authenticode missing/invalid.' }
+          gh release view $env:RELEASE_TAG --repo $env:REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) { throw 'Refusing to overwrite an existing release.' }
+          $assets = @(Get-ChildItem -LiteralPath $out -File | ForEach-Object FullName)
+          # 发布正文和应用读取同一份已验证清单中的说明，不能退回技术占位句。
+          $manifest = Get-Content -LiteralPath (Join-Path $out 'update-windows-amd64.json') -Raw | ConvertFrom-Json
+          $notesFile = Join-Path $env:RUNNER_TEMP 'toolnest-release-notes.md'
+          [IO.File]::WriteAllText($notesFile, $manifest.notes, [Text.UTF8Encoding]::new($false))
+          gh release create $env:RELEASE_TAG @assets --repo $env:REPOSITORY --verify-tag --draft --title "ToolNest $version" --notes-file $notesFile
+          if ($LASTEXITCODE) { throw 'Draft upload failed; nothing published.' }
+          # 上传后从 GitHub 重新下载完整资产；只信独立公钥，不信下载目录自带公钥。
+          $download = Join-Path $env:RUNNER_TEMP 'remote-verified'
+          gh release download $env:RELEASE_TAG --repo $env:REPOSITORY --dir $download
+          if ($LASTEXITCODE) { throw 'Draft download failed; retain draft, do not publish.' }
+          ./scripts/build.ps1 verify -Go $go -Output $download -Repository $env:REPOSITORY -PublicKey $env:PUBLIC_KEY
+          if ((Get-AuthenticodeSignature -LiteralPath (Join-Path $download (Split-Path $installer -Leaf))).Status -ne 'Valid') { throw 'Downloaded installer signature invalid.' }
+          gh release edit $env:RELEASE_TAG --repo $env:REPOSITORY --draft=false --latest
+          if ($LASTEXITCODE) { throw 'Publishing failed; inspect retained draft manually.' }

@@ -1,0 +1,8 @@
+{
+  "repository": "zxbdzh/toolnest-updates-test",
+  "channel": "test",
+  "publicKey": "kdxPcdcyVtB/7Pw9y/HOq45VjV0JcNUo2UIyjWzosoQ=",
+  "baselineVersion": "0.1.0",
+  "targetVersion": "0.1.1",
+  "authenticodeConfigured": false
+}
