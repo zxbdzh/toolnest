@@ -49,7 +49,7 @@ status := updates.Status()             // 轮询副本，不暴露可变内部�
 
 MyGo 来源固定为 `github.com/egoist/mygo` 提交 `0d644f4aca24be8208d1b7d364d7c928fc2cb890`（`v0.9.1-0.20261111182651-0d644f4aca24`）。该版本的 verifier、归档和差分实现均在 `mygo/internal/update`，Go internal 规则禁止本项目直接导入。公开 `mygo.Update.Install` 将下载与替换绑定，不能复用而绕开 busy/用户重启；没有使用它。
 
-因此采用标准库 `crypto/ed25519`，**完全沿用 MyGo 的签名约定：Ed25519(SHA-256(完整 tar.gz 字节))，公钥 32 字节 base64，签名 64 字节 base64**，没有自造签名算法。读取 MyGo 同结构的 `update-windows-amd64.json`（version / notes / url / size / signature / deltas），生产由 GitHub `/releases/latest` 仅取稳定非草稿版，并核对 release tag 与 manifest 版本。每个请求与重定向只允许 HTTPS；`HTTPTestSource` 则只允许数字回环 HTTP，包括每跳重定向，不能用任意公网 HTTP。
+因此采用标准库 `crypto/ed25519`，**完全沿用 MyGo 的签名约定：Ed25519(SHA-256(完整 tar.gz 字节))，公钥 32 字节 base64，签名 64 字节 base64**，没有自造签名算法。读取 MyGo 同结构的 `update-windows-amd64.json`（version / notes / url / size / signature / deltas）。GitHub 源直接访问 `/releases/latest/download/update-windows-amd64.json`，由 GitHub 解析最新正式发行，不再依赖可能受共享出口配额限制的匿名 REST API；稳定版本校验与已签名归档内描述符的版本绑定继续保留。`Source.Endpoint()` 同时用于连接测试，避免探测和更新使用不同入口。每个请求与重定向只允许 HTTPS；`HTTPTestSource` 则只允许数字回环 HTTP，包括每跳重定向，不能用任意公网 HTTP。
 
 首版选择 **单 exe 原子切换策略**，归档只接受下面两个普通文件，任何 DLL/目录/链接/路径穿越/ADS/重复文件均拒绝，不半替换多文件程序：
 

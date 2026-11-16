@@ -4,7 +4,7 @@ Windows 桌面工具箱，提供 PATH 查看、快照备份、差异比较与安
 
 ## 下载与安装
 
-从 [GitHub Releases](https://github.com/zxbdzh/toolnest/releases/latest) 下载 `ToolNest-Setup-0.0.4-windows-amd64.exe`，支持 Windows 11 x64。
+从 [GitHub Releases](https://github.com/zxbdzh/toolnest/releases/latest) 下载 `ToolNest-Setup-0.0.5-windows-amd64.exe`，支持 Windows 11 x64。
 
 安装前正常退出旧版 ToolNest，包括托盘；覆盖安装保留原配置、快照、自动备份计划和执行记录，无需先卸载。安装完成后，从桌面或开始菜单打开 ToolNest。安装器不修改 PATH，不自动启用自启或备份计划，也不会自动打开软件；卸载保留快照、设置和执行记录。
 
@@ -57,7 +57,7 @@ pwsh -File .\scripts\build.ps1 -Task format -Go '<Go 1.27.4 的 go.exe>'
 - [应用内计划与运行状态决定](docs/adr/0002-in-app-scheduling.md)。
 - [Magpie 与 MyGo 的安装更新调研](docs/research/installation-and-updates.md)。
 - [安装与发布](packaging/README.md)：测试签名、Authenticode、发布门禁与数据保留。
-- [发布说明](docs/releases/0.0.4.md)。
+- [发布说明](docs/releases/0.0.5.md)。
 - [问题反馈](https://github.com/zxbdzh/toolnest/issues)。
 - [第三方许可](THIRD_PARTY_NOTICES.md)。
 

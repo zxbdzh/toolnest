@@ -19,6 +19,7 @@ const maxMetadata = 1 << 20
 type Source interface {
 	latest(context.Context, *network.Client) (*Release, error)
 	allow(string) bool
+	Endpoint() string
 }
 
 type Release struct {
@@ -61,53 +62,19 @@ func (source githubSource) allow(raw string) bool {
 	address, err := url.Parse(raw)
 	return err == nil && address.Scheme == "https" && address.Host != "" && address.User == nil && address.Fragment == ""
 }
+func (source githubSource) Endpoint() string {
+	return "https://github.com/" + source.repository + "/releases/latest/download/" + source.asset
+}
+
 func (source githubSource) latest(ctx context.Context, client *network.Client) (*Release, error) {
-	data, err := fetch(ctx, client, "https://api.github.com/repos/"+source.repository+"/releases/latest", maxMetadata, source.allow)
-	if err != nil {
-		return nil, err
-	}
-	var latest struct {
-		Tag        string `json:"tag_name"`
-		Body       string `json:"body"`
-		Draft      bool   `json:"draft"`
-		Prerelease bool   `json:"prerelease"`
-		Assets     []struct {
-			Name string `json:"name"`
-			URL  string `json:"browser_download_url"`
-		} `json:"assets"`
-	}
-	if json.Unmarshal(data, &latest) != nil || latest.Draft || latest.Prerelease {
-		return nil, ErrVersion
-	}
-	if _, err := stableVersion(latest.Tag); err != nil {
-		return nil, err
-	}
-	manifestURL := ""
-	for _, asset := range latest.Assets {
-		if asset.Name == source.asset {
-			if manifestURL != "" {
-				return nil, ErrArchive
-			}
-			manifestURL = asset.URL
-		}
-	}
-	if manifestURL == "" {
-		return nil, errors.New("stable release is missing its signed-update manifest")
-	}
-	release, err := readManifest(ctx, client, manifestURL, source.allow)
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimPrefix(latest.Tag, "v") != strings.TrimPrefix(release.Version, "v") {
-		return nil, ErrVersion
-	}
-	if release.Notes == "" {
-		release.Notes = latest.Body
-	}
-	return release, nil
+	// latest/download 由 GitHub 解析最新正式发行，不消耗共享出口的匿名 API 配额。
+	// 仍只走用户配置的客户端；大小、稳定版本、归档签名和归档内版本绑定由原有流程核验。
+	return readManifest(ctx, client, source.Endpoint(), source.allow)
 }
 
 type testSource struct{ endpoint string }
+
+func (source testSource) Endpoint() string { return source.endpoint }
 
 // HTTPTestSource intentionally accepts only numeric loopback addresses.
 func HTTPTestSource(endpoint string) (Source, error) {

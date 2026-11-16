@@ -165,7 +165,8 @@ func resolveEnvironment(flags options) (environment, error) {
 		if err != nil {
 			return env, err
 		}
-		env.endpoint = "https://api.github.com/repos/" + packaging.Repository + "/releases/latest"
+		// 连接测试与实际更新发现共用入口，不能测试 API 却从另一个地址检查更新。
+		env.endpoint = env.source.Endpoint()
 	}
 	// 开发 exe 可以离线工作，但未安装路径不参与生产自替换。
 	if !env.installed && !flags.testing() {
