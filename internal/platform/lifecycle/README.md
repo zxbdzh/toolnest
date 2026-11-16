@@ -68,7 +68,7 @@ mygo.App.OnReady(func() {
 - `ParseLaunch([]string) Launch`：仅严格的单参数 `--autostart` 为自启；其他 helper/更新模式必须由 main 事先分流。
 - `AcquireInstance(ctx, namespace, launch, onLaunch) (*Instance, secondary bool, error)`；固定 namespace 不随版本/安装路径变化；回调必须迅速返回，推荐 `controller.SecondLaunch`。
 - `NewController(Hooks)`；`Start` 仅 UI ready 后 UI 线程调用。`Hide`、`SetStatus`、`SecondLaunch`、`HandleAction` 可排队；`ProbeTray` 是 UI 线程方法。
-- 托盘提供显示主窗口/立即备份/设置/退出、运行/错误文字和两套图标。控制器每 2 秒正向探测图标，失效显窗且同次持续失效只提示一次。没有真实托盘测试。
+- 托盘提供显示主窗口/立即备份/设置/退出、运行/错误文字和两套图标。控制器每 2 秒探测图标，运行中暂时失效只记录一次错误，不显示或聚焦窗口；手动二次启动仍可唤回。初次启动失败或用户请求隐藏时不可用，才保留可见入口。桌面适配在恢复后重发状态，并仅清除托盘自己的错误。自动回归覆盖失联、更新状态失败和恢复；物理息屏与 Explorer 托盘仍需真实设备验收。
 - `CurrentAccount()` 返回 token SID 和可解析的域账号；`RequireUnelevated()` 是拒绝管理员 UI 的 guard，不是提权/降权执行器。
 
 ## Run：默认关闭、精确归属与撤销

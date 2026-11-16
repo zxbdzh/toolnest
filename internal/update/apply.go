@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -102,8 +103,9 @@ func (manager *Manager) Apply(ctx context.Context) (result SwitchResult, err err
 		_ = os.Remove(candidate)
 		return result, err
 	}
-	// 从此开始不可按普通取消半途退出；任何失败都保留事务及旧版本用于恢复。
-	if err = manager.rename(target, backup); err != nil {
+	// 父进程刚退出时，Windows 或安全软件可能短暂持有旧程序映射。
+	// 只在真正改名前做有界等待；进入替换阶段后仍保持原事务和回退语义。
+	if err = renameWhenReleased(ctx, manager.rename, target, backup); err != nil {
 		journal.Phase = "rolled-back"
 		journal.Failure = "installed executable is locked or not writable"
 		_ = writeJSON(manager.journalPath(), journal)
@@ -122,6 +124,31 @@ func (manager *Manager) Apply(ctx context.Context) (result SwitchResult, err err
 	}
 	manager.set(func(status *Status) { status.Phase = PendingConfirmation })
 	return SwitchResult{Version: journal.Version, Executable: target, Backup: backup, Token: identifier}, nil
+}
+
+func renameWhenReleased(ctx context.Context, rename func(string, string) error, from, to string) error {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		err := rename(from, to)
+		if err == nil {
+			return nil
+		}
+		// 权限拒绝、路径错误和人为长期占用不能靠无限重试掩盖；
+		// 仅 Windows 的共享冲突交给短暂退出/扫描的释放窗口。
+		if !errors.Is(err, syscall.Errno(32)) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func (manager *Manager) diskLock() (func(), error) {

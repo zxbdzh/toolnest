@@ -20,6 +20,10 @@ public static class BackgroundDesktop {
  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr window,IntPtr dc,uint flags);
  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window,out RECT rect);
+ [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr window,out RECT rect);
+ [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr window);
+ [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr window);
+ [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr window);
  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window,uint message,IntPtr first,IntPtr second);
  [StructLayout(LayoutKind.Sequential)] public struct RECT {public int Left,Top,Right,Bottom;}
 }
@@ -34,7 +38,7 @@ public static class BackgroundDesktop {
   $env:TOOLNEST_ENTRY_TEST_EXE=$configuration.Application
   $env:TOOLNEST_ENTRY_TEST_NEW_EXE=$configuration.UpdatedApplication
   $env:GOMAXPROCS='2'
-  $entryStart=[Diagnostics.ProcessStartInfo]::new($configuration.EntryTests,'-test.v -test.run ^TestEntryPreparedUpdateAndRollback$ -test.timeout 150s')
+  $entryStart=[Diagnostics.ProcessStartInfo]::new($configuration.EntryTests,'-test.v -test.run ^Test(EntryPreparedUpdateAndRollback|TrayHiddenNativeWindow)$ -test.timeout 150s')
   $entryStart.UseShellExecute=$false;$entryStart.CreateNoWindow=$true
   $entryStart.RedirectStandardOutput=$true;$entryStart.RedirectStandardError=$true
   $entryProcess=[Diagnostics.Process]::Start($entryStart)
@@ -44,8 +48,23 @@ public static class BackgroundDesktop {
   [IO.File]::WriteAllText((Join-Path $configuration.Root 'entry-stderr.txt'),$entryError.Result,[Text.Encoding]::UTF8)
   if($entryProcess.ExitCode-ne 0){throw 'Actual application update or rollback failed; see entry-tests.txt'}
   if($entryOutput.Result-notmatch '(?m)^--- PASS: TestEntryPreparedUpdateAndRollback '){throw 'Entry tests did not execute or were skipped'}
-  $result.status='passed';$result.scenarios=@('confirmed','confirmed-in-tray','startup-failed-rollback')
+  if($entryOutput.Result-notmatch '(?m)^--- PASS: TestTrayHiddenNativeWindow '){throw 'Hidden native window test did not execute or was skipped'}
+  $result.status='passed';$result.scenarios=@('confirmed','confirmed-in-tray','startup-failed-rollback','hidden-window-native-events')
   return
+ }
+ if($configuration.Scenario -eq 'inspect'){
+  $nativeTests=Join-Path (Split-Path -Parent $configuration.Application) 'entry.test.exe'
+  if(!(Test-Path -LiteralPath $nativeTests -PathType Leaf)){throw 'Native hidden-window test executable missing'}
+  $env:TOOLNEST_ENTRY_TEST_DESKTOP=$configuration.Desktop
+  $nativeStart=[Diagnostics.ProcessStartInfo]::new($nativeTests,'-test.v -test.run ^TestTrayHiddenNativeWindow$ -test.timeout 30s')
+  $nativeStart.UseShellExecute=$false;$nativeStart.CreateNoWindow=$true
+  $nativeStart.RedirectStandardOutput=$true;$nativeStart.RedirectStandardError=$true
+  $nativeProcess=[Diagnostics.Process]::Start($nativeStart)
+  $nativeOutput=$nativeProcess.StandardOutput.ReadToEndAsync();$nativeError=$nativeProcess.StandardError.ReadToEndAsync()
+  if(!$nativeProcess.WaitForExit(35000)){throw 'Hidden-window regression exceeded its private-desktop deadline'}
+  [IO.File]::WriteAllText((Join-Path $configuration.Root 'hidden-window-tests.txt'),$nativeOutput.Result+$nativeError.Result,[Text.Encoding]::UTF8)
+  if($nativeProcess.ExitCode-ne 0-or $nativeOutput.Result-notmatch '(?m)^--- PASS: TestTrayHiddenNativeWindow '){throw 'Hidden-window native regression failed or was skipped'}
+  $result.hiddenWindowNativeEventsPassed=$true
  }
  $data=Join-Path $configuration.Root 'data'
  $testRoot=[guid]::NewGuid().ToString('N')
@@ -69,6 +88,8 @@ public static class BackgroundDesktop {
  $start=[Diagnostics.ProcessStartInfo]::new($configuration.Application,$arguments)
  $start.UseShellExecute=$false;$start.CreateNoWindow=$true
  $start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
+ # 只给本次私有桌面子进程打开耗时记录，不修改宿主环境或程序默认行为。
+ if($configuration.Scenario-eq 'inspect'){$start.EnvironmentVariables['MYGO_FRAME_STATS']='all'}
  $application=[Diagnostics.Process]::Start($start)
  $stdout=$application.StandardOutput.ReadToEndAsync();$stderr=$application.StandardError.ReadToEndAsync()
  $result.applicationPID=$application.Id
@@ -95,29 +116,57 @@ public static class BackgroundDesktop {
   $controls=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
   $names=@();foreach($control in $controls){if($control.Current.Name){$names+=$control.Current.Name}}
   $result.controls=$names
-  $skip=@($controls|Where-Object {$_.Current.Name-ceq '稍后再说'-and $_.Current.ControlType-ne [Windows.Automation.ControlType]::Text})
+  $skip=@($controls|Where-Object {$_.Current.Name-ceq '先看看'-and $_.Current.ControlType-ne [Windows.Automation.ControlType]::Text})
   if($skip.Count -eq 1){$skip[0].GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke();Start-Sleep -Milliseconds 400;$result.onboardingInvoked=$true}
   $bounds=[BackgroundDesktop+RECT]::new();[void][BackgroundDesktop]::GetWindowRect($window,[ref]$bounds)
   $bitmap=[Drawing.Bitmap]::new($bounds.Right-$bounds.Left,$bounds.Bottom-$bounds.Top);$graphics=[Drawing.Graphics]::FromImage($bitmap);$dc=$graphics.GetHdc()
   try{$captured=[BackgroundDesktop]::PrintWindow($window,$dc,2)}finally{$graphics.ReleaseHdc($dc)}
   try {if(!$captured){throw 'PrintWindow failed on the inactive desktop'};$bitmap.Save((Join-Path $configuration.Root 'window.png'),[Drawing.Imaging.ImageFormat]::Png)}finally{$graphics.Dispose();$bitmap.Dispose()}
   $result.capture='PrintWindow on private desktop; visual content must be reviewed'
-  function Controls { @($root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)) }
+  function Controls {
+   $deadline=[DateTime]::UtcNow.AddSeconds(3)
+   do {
+    try {
+     $freshRoot=[Windows.Automation.AutomationElement]::FromHandle($window)
+     return @($freshRoot.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition))
+    } catch [Management.Automation.MethodInvocationException] {
+     # 仅重取已销毁的 UIA 节点，绝不自动重放点击，以免重复执行恢复或删除。
+     if($_.Exception.InnerException -isnot [Windows.Automation.ElementNotAvailableException]-or [DateTime]::UtcNow-ge $deadline){throw}
+     $application.Refresh();if($application.HasExited){throw 'Application exited while refreshing accessibility nodes'}
+     Start-Sleep -Milliseconds 80
+    }
+   }while([DateTime]::UtcNow-lt $deadline)
+   throw 'Accessibility snapshot did not settle within its deadline'
+  }
+  function Matching-Control([string]$label) {
+   $deadline=[DateTime]::UtcNow.AddSeconds(5)
+   do {
+    try {
+     $matching=@(Controls|Where-Object {$_.Current.Name-ceq $label-and $_.Current.ControlType-ne [Windows.Automation.ControlType]::Text-and $_.Current.IsEnabled})
+     if($matching.Count-eq 1){return $matching[0]}
+     if($matching.Count-gt 1){throw ('Ambiguous native control: '+$label)}
+    } catch [Management.Automation.MethodInvocationException] {
+     if($_.Exception.InnerException -isnot [Windows.Automation.ElementNotAvailableException]){throw}
+    }
+    Start-Sleep -Milliseconds 80
+   }while([DateTime]::UtcNow-lt $deadline)
+   throw ('Missing native control: '+$label)
+  }
   function Invoke-Control([string]$label) {
-   $matches=@(Controls|Where-Object {$_.Current.Name-ceq $label-and $_.Current.ControlType-ne [Windows.Automation.ControlType]::Text-and $_.Current.IsEnabled})
-   if($matches.Count-ne 1){throw ('Ambiguous or missing native control: '+$label)}
+   $result.step='invoke: '+$label
+   $element=Matching-Control $label
    $pattern=$null
-   if($matches[0].TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)){$pattern.Invoke()}
-   elseif($matches[0].TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern,[ref]$pattern)){$pattern.Select()}
-   elseif($matches[0].TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern,[ref]$pattern)){$pattern.Toggle()}
+   if($element.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern,[ref]$pattern)){$pattern.Toggle()}
+   elseif($element.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)){$pattern.Invoke()}
+   elseif($element.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern,[ref]$pattern)){$pattern.Select()}
    else{throw ('Native action unavailable: '+$label)}
    Start-Sleep -Milliseconds 350
   }
   function Set-ControlValue([string]$label,[string]$value) {
-   $matches=@(Controls|Where-Object {$_.Current.Name-ceq $label-and $_.Current.ControlType-ne [Windows.Automation.ControlType]::Text-and $_.Current.IsEnabled})
-   if($matches.Count-ne 1){throw ('Ambiguous or missing input: '+$label)}
+   $result.step='edit: '+$label
+   $element=Matching-Control $label
    $pattern=$null
-   if(!$matches[0].TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)-or $pattern.Current.IsReadOnly){throw ('Editable ValuePattern unavailable: '+$label)}
+   if(!$element.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)-or $pattern.Current.IsReadOnly){throw ('Editable ValuePattern unavailable: '+$label)}
    $pattern.SetValue($value);Start-Sleep -Milliseconds 350
   }
   function Wait-SnapshotCount([int]$expected) {
@@ -173,18 +222,34 @@ public static class BackgroundDesktop {
    }while([DateTime]::UtcNow-lt $deadline)
    throw ('Schedule was not persisted: '+$enabled)
   }
+  # UIA 调用软件自己绘制的按钮；不发送前台键鼠，也不切换输入桌面。
+  Invoke-Control '最大化窗口'
+  if(![BackgroundDesktop]::IsZoomed($window)){throw 'Custom maximize button did not maximize the native window'}
+  Invoke-Control '还原窗口'
+  if([BackgroundDesktop]::IsZoomed($window)){throw 'Custom restore button did not restore the native window'}
+  Invoke-Control '最小化窗口'
+  if(![BackgroundDesktop]::IsIconic($window)){throw 'Custom minimize button did not minimize the native window'}
+  [void][BackgroundDesktop]::PostMessage($window,0x0112,[IntPtr]0xF120,[IntPtr]::Zero)
+  Start-Sleep -Milliseconds 350
+  if([BackgroundDesktop]::IsIconic($window)){throw 'Private test window did not restore after minimizing'}
+  $outer=[BackgroundDesktop+RECT]::new();$client=[BackgroundDesktop+RECT]::new()
+  if(![BackgroundDesktop]::GetWindowRect($window,[ref]$outer)-or ![BackgroundDesktop]::GetClientRect($window,[ref]$client)){throw 'Native frame dimensions unavailable'}
+  $frameHeight=($outer.Bottom-$outer.Top)-($client.Bottom-$client.Top)
+  $dpi=[BackgroundDesktop]::GetDpiForWindow($window)
+  if($dpi-eq 0-or $frameHeight-gt [Math]::Ceiling(20*$dpi/96)){throw 'System title bar still consumes an extra row'}
+  $result.customCaption=@{maximize=$true;restore=$true;minimize=$true;frameHeight=$frameHeight;dpi=$dpi;nativeTitlebarRemoved=$true}
   Invoke-Control '应用设置'
   Invoke-Control '浅色';Invoke-Control '保存设置';Wait-Theme 'light'
   Start-Sleep -Milliseconds 300
   Capture-Page 'settings-light'
-  Invoke-Control '工具空间';Capture-Page 'home-light'
-  Set-ControlValue '搜索工具' '代理'
-  Invoke-Control '打开公共代理';Capture-Page 'proxy-settings'
+  Invoke-Control '概览';Capture-Page 'home-empty-light'
+  Invoke-Control '应用设置';Invoke-Control '高级';Invoke-Control '配置代理';Capture-Page 'proxy-settings'
   Invoke-Control '直连';Invoke-Control '保存设置'
-  Invoke-Control '工具空间';Set-ControlValue '搜索工具' ''
+  Invoke-Control '概览'
   Invoke-Control '备份当前环境'
   $homeSnapshots=@(Wait-SnapshotCount 1)
   $result.homeBackupInvoked=$true
+  Capture-Page 'home-light'
   Invoke-Control 'PATH 保护'
   Set-ControlValue '用户 PATH搜索' 'Python';Capture-Page 'path-search'
   Set-ControlValue '用户 PATH搜索' ''
@@ -229,13 +294,14 @@ public static class BackgroundDesktop {
   Start-Sleep -Milliseconds 300
   Capture-Page 'settings-dark'
   Invoke-Control 'PATH 保护';Capture-Page 'current-dark'
-  Invoke-Control '工具空间';Capture-Page 'home-dark'
-  $result.pages=@('home-light','home-dark','proxy-settings','path-search','current','snapshots','snapshot-comparison','restore-preview','schedule','schedule-dirty','settings-light','settings-dark','current-dark')
+  Invoke-Control '快照';Capture-Page 'snapshots-dark'
+  Invoke-Control '概览';Capture-Page 'home-dark'
+  $result.pages=@('home-light','home-empty-light','home-dark','proxy-settings','path-search','current','snapshots','snapshots-dark','snapshot-comparison','restore-preview','schedule','schedule-dirty','settings-light','settings-dark','current-dark')
   $result.themesPersisted=@('light','dark')
   $result.scheduleSaved=$true
-  [void][BackgroundDesktop]::PostMessage($window,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)
+  Invoke-Control '关闭窗口'
   Start-Sleep -Milliseconds 250
-  $controls=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+  $controls=Controls
   $exit=@($controls|Where-Object {$_.Current.Name-ceq '退出应用，停止应用内计划'-and $_.Current.ControlType-ne [Windows.Automation.ControlType]::Text})
   $confirm=@($controls|Where-Object {$_.Current.Name-ceq '确认关闭'-and $_.Current.ControlType-ne [Windows.Automation.ControlType]::Text})
   if($exit.Count-ne 1-or $confirm.Count-ne 1){throw 'Cannot resolve normal-exit controls on private desktop'}
@@ -245,8 +311,28 @@ public static class BackgroundDesktop {
   if(!$application.WaitForExit(10000)){throw 'Application did not exit normally'}
   $result.stdout=$stdout.Result;$result.stderr=$stderr.Result
   if($application.ExitCode-ne 0){throw 'Native background process failed on exit'}
+  $trace=$stderr.Result
+  [IO.File]::WriteAllText((Join-Path $configuration.Root 'native-frames.log'),$trace,[Text.Encoding]::UTF8)
+  $frames=@([regex]::Matches($trace,'mygo: frame (?<frame>\d+) took (?<total>[\d.]+) ms: build (?<build>[\d.]+).*?layout (?<layout>[\d.]+), paint (?<paint>[\d.]+), present (?<present>[\d.]+) \((?<renderer>[^)]+)\)')|ForEach-Object {
+   [pscustomobject]@{frame=[int]$_.Groups['frame'].Value;total=[double]::Parse($_.Groups['total'].Value,[Globalization.CultureInfo]::InvariantCulture);build=[double]::Parse($_.Groups['build'].Value,[Globalization.CultureInfo]::InvariantCulture);layout=[double]::Parse($_.Groups['layout'].Value,[Globalization.CultureInfo]::InvariantCulture);paint=[double]::Parse($_.Groups['paint'].Value,[Globalization.CultureInfo]::InvariantCulture);present=[double]::Parse($_.Groups['present'].Value,[Globalization.CultureInfo]::InvariantCulture);renderer=$_.Groups['renderer'].Value}
+  })
+  if($frames.Count-lt 20){throw 'Native frame statistics missing; motion performance is not verified'}
+  $warm=@($frames|Select-Object -Skip 10)
+  $totals=@($warm.total|Sort-Object);$cpu=@($warm|ForEach-Object {$_.build+$_.layout+$_.paint}|Sort-Object)
+  $percentile95=[Math]::Min($totals.Count-1,[int][Math]::Ceiling($totals.Count*0.95)-1)
+  $metrics=@{frames=$frames.Count;warmFrames=$warm.Count;p95TotalMs=$totals[$percentile95];maxTotalMs=$totals[-1];p95BuildLayoutPaintMs=$cpu[$percentile95];over50Ms=@($warm|Where-Object {$_.total-gt 50}).Count;renderers=@($frames.renderer|Select-Object -Unique);scope='private inactive desktop, includes captures and UIA; not physical display FPS'}
+  $metrics|ConvertTo-Json -Depth 5|Set-Content -LiteralPath (Join-Path $configuration.Root 'native-frame-metrics.json') -Encoding UTF8
+  $result.frameMetrics=$metrics
+  # 完整耗时行单独归档，避免将大量诊断日志塞进界面验收摘要。
+  $result.stderr=($trace-split "`n"|Where-Object {$_-notmatch 'mygo: frame '})-join "`n"
  }
  $result.status='passed'
-}catch{$result.error=$_.Exception.ToString()}
+}catch{
+ $result.error=$_.Exception.ToString();$result.errorLocation=$_.ScriptStackTrace
+ if($configuration.Scenario-ceq 'inspect'){
+  try{Capture-Page 'failure'}catch{}
+  try{@(Controls|ForEach-Object {@{name=$_.Current.Name;role=[string]$_.Current.ControlType;enabled=$_.Current.IsEnabled;offscreen=$_.Current.IsOffscreen}})|ConvertTo-Json -Depth 4|Set-Content -LiteralPath (Join-Path $configuration.Root 'failure-controls.json') -Encoding UTF8}catch{}
+ }
+}
 finally {$result|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $configuration.Root 'worker.json') -Encoding UTF8}
 if($result.status-ne 'passed'){exit 1}

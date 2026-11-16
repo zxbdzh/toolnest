@@ -1,16 +1,16 @@
 # ToolNest
 
-Windows 桌面工具箱，首版提供 PATH 查看、快照备份、差异比较与安全恢复。使用 Go 和 [MyGo](https://github.com/egoist/mygo) 原生 UI，采用浮光布局与雾蓝银白配色。
+Windows 桌面工具箱，提供 PATH 查看、快照备份、差异比较与安全恢复。使用 Go 和 [MyGo](https://github.com/egoist/mygo) 原生 UI，采用悬浮侧栏、雾蓝银白配色与应用内磨砂。
 
 ## 下载与安装
 
-从 [GitHub Releases](https://github.com/zxbdzh/toolnest/releases/latest) 下载 `ToolNest-Setup-0.0.1-windows-amd64.exe`。首个公开版本为 **0.0.1**，支持 Windows 11 x64。
+从 [GitHub Releases](https://github.com/zxbdzh/toolnest/releases/latest) 下载 `ToolNest-Setup-0.0.4-windows-amd64.exe`，支持 Windows 11 x64。
 
-安装前正常退出旧版 ToolNest，包括托盘。安装完成后，从桌面或开始菜单打开 ToolNest。安装器不修改 PATH，不自动启用自启或备份计划；卸载保留快照、设置和执行记录。
+安装前正常退出旧版 ToolNest，包括托盘；覆盖安装保留原配置、快照、自动备份计划和执行记录，无需先卸载。安装完成后，从桌面或开始菜单打开 ToolNest。安装器不修改 PATH，不自动启用自启或备份计划，也不会自动打开软件；卸载保留快照、设置和执行记录。
 
 这是公开体验版，安装器尚未做 Windows 代码签名，系统可能显示“未知发布者”。应用更新包另有独立签名验证。公开更新入口与源码使用本仓库，后续新版本发布后会按设置检查更新。
 
-此前的本地 0.1.x 版本用于开发验收，不属于公开版本序列。请先退出再手动覆盖安装 0.0.1；软件不会自动将更高版本号降级。
+此前的本地 0.1.x 版本用于开发验收，不属于公开版本序列。请先退出再手动覆盖安装当前公开版本；软件不会自动将更高版本号降级。
 
 ## 功能
 
@@ -23,6 +23,10 @@ Windows 桌面工具箱，首版提供 PATH 查看、快照备份、差异比较
 - 公共代理支持跟随系统、直连、自定义 HTTP／SOCKS5，代理凭据由 Windows 保存。
 - 签名更新包下载后由用户决定重启或下次打开生效，失败保留恢复入口。
 - 明暗主题、中文安装向导、统一产品图标，以及桌面和开始菜单入口。
+- 概览直达最近快照；通用设置保持精简，代理和存储按需进入高级设置。
+- 隐藏后保持后台状态，托盘短暂不可用不会主动弹窗；手动再次启动仍可唤回。
+- 软件自绘顶栏，保留拖动、最大化、边缘缩放与关闭确认。
+- 内置 MiSans，提供三档字号；应用内磨砂不依赖 Windows 透明效果开关。
 
 查看、搜索、复制和备份不会修改 PATH。**恢复会在预览确认后修改所选范围**；系统范围按需请求管理员授权。
 
@@ -53,11 +57,11 @@ pwsh -File .\scripts\build.ps1 -Task format -Go '<Go 1.27.4 的 go.exe>'
 - [应用内计划与运行状态决定](docs/adr/0002-in-app-scheduling.md)。
 - [Magpie 与 MyGo 的安装更新调研](docs/research/installation-and-updates.md)。
 - [安装与发布](packaging/README.md)：测试签名、Authenticode、发布门禁与数据保留。
-- [发布说明](docs/releases/0.0.1.md)。
+- [发布说明](docs/releases/0.0.4.md)。
 - [问题反馈](https://github.com/zxbdzh/toolnest/issues)。
 - [第三方许可](THIRD_PARTY_NOTICES.md)。
 
-首版面向 Windows 11 x64，采用局部磨砂、正文实底和跟随系统的明暗主题；具备软件内部备份计划、托盘与关闭记忆、安装包和自动更新，网络使用工具箱公共代理配置。安装、代理下载与跨版本更新均属于首版验收范围。
+当前版本面向 Windows 11 x64，采用应用内磨砂、清晰的内容层次和跟随系统的明暗主题；具备软件内部备份计划、托盘与关闭记忆、安装包和自动更新，网络使用工具箱公共代理配置。安装、代理下载与跨版本更新均属于验收范围。
 
 已有回归覆盖原始 PATH 保真、保护快照、失败回滚、计划、代理和更新验证；独立测试安装链已验证首次使用、备份恢复、跨版本更新、卸载和重装保留数据。真实 Explorer 托盘、登录自启、UAC 和物理多显示器 DPI 仍需不同设备继续验证。
 

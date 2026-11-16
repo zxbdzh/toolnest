@@ -114,6 +114,7 @@ Section "ToolNest"
   File /oname=ThirdParty-x-net.txt "licenses\golang.org_x_net.txt"
   File /oname=ThirdParty-x-sys.txt "licenses\golang.org_x_sys.txt"
   File /oname=ThirdParty-x-text.txt "licenses\golang.org_x_text.txt"
+  File /oname=ThirdParty-MiSans.txt "licenses\MiSans.txt"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   ${If} ${Errors}
     MessageBox MB_ICONSTOP|MB_OK "程序文件写入失败。请检查文件占用、目录权限或磁盘空间后重试；没有强制关闭任何应用。" /SD IDOK
@@ -159,6 +160,7 @@ Section "Uninstall"
   Delete "$INSTDIR\ThirdParty-x-net.txt"
   Delete "$INSTDIR\ThirdParty-x-sys.txt"
   Delete "$INSTDIR\ThirdParty-x-text.txt"
+  Delete "$INSTDIR\ThirdParty-MiSans.txt"
   Delete "$INSTDIR\Uninstall.exe"
   ${If} ${Errors}
     ; 文件仍被占用时保留卸载登记供重试，绝不延迟到重启删除。

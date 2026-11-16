@@ -67,6 +67,7 @@ type Preview struct {
 
 type Settings struct {
 	Theme                                             string
+	TextSize                                          string
 	CloseBehavior                                     string
 	LaunchAtLogin, StartInTray, OnboardingDone        bool
 	SnapshotDir                                       string

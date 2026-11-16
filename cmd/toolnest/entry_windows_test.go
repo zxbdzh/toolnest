@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 	"unsafe"
@@ -155,6 +157,66 @@ func TestProductionNeverAllowsInstalledTestOverrides(t *testing.T) {
 	}
 }
 
+// 旧版助手退出后，新版可能短暂占用 helper-result.json。读取方必须容忍
+// Windows 共享冲突并重试，不能把瞬时读失败当成上次更新失败展示。
+func TestHelperResultReadToleratesSharingViolation(t *testing.T) {
+	resultPath := filepath.Join(t.TempDir(), "helper-result.json")
+	if err := os.WriteFile(resultPath, []byte(`{"error":"transient write"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(resultPath), windows.GENERIC_READ,
+		0, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var closeOnce sync.Once
+	closeHandle := func() { closeOnce.Do(func() { _ = windows.CloseHandle(handle) }) }
+	t.Cleanup(closeHandle)
+
+	// 专有句柄先造成 ERROR_SHARING_VIOLATION，短延迟后释放，模拟原子写入收尾窗口。
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		closeHandle()
+	}()
+	data, err := readHelperResult(resultPath)
+	if err != nil {
+		t.Fatalf("read did not tolerate sharing violation: %v", err)
+	}
+	var report struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(data, &report) != nil || report.Error != "transient write" {
+		t.Fatalf("unexpected helper result: %s", data)
+	}
+}
+
+func TestHelperResultReadReportsPermanentOccupancy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "helper-result.json")
+	if err := os.WriteFile(path, []byte(`{"error":"occupied"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := windows.CreateFile(windows.StringToUTF16Ptr(path), windows.GENERIC_READ,
+		0, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = windows.CloseHandle(handle) })
+	start := time.Now()
+	if _, err := readHelperResult(path); !errors.Is(err, syscall.Errno(32)) {
+		t.Fatalf("permanent occupancy must remain visible: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 500*time.Millisecond {
+		t.Fatalf("sharing violation returned too early: %s", elapsed)
+	}
+}
+
+func TestHelperResultReadKeepsMissingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "helper-result.json")
+	if _, err := readHelperResult(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing result must remain missing: %v", err)
+	}
+}
+
 func entryUpdateFixture(t *testing.T, oldExe, newExe string, failStartup, tray bool) {
 	t.Helper()
 	root := t.TempDir()
@@ -183,9 +245,10 @@ func entryUpdateFixture(t *testing.T, oldExe, newExe string, failStartup, tray b
 	if failStartup {
 		payload = []byte("not a valid Windows executable; startup must fail")
 	}
-	archive := entryArchive(t, payload)
+	baseline, target := entryVersion(t, oldExe), entryVersion(t, newExe)
+	archive := entryArchive(t, payload, target)
 	digest := sha256.Sum256(archive)
-	release := update.Release{Version: "0.1.1", Size: int64(len(archive)), Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(private, digest[:]))}
+	release := update.Release{Version: target, Size: int64(len(archive)), Signature: base64.StdEncoding.EncodeToString(ed25519.Sign(private, digest[:]))}
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == "/archive" {
 			_, _ = writer.Write(archive)
@@ -203,7 +266,7 @@ func entryUpdateFixture(t *testing.T, oldExe, newExe string, failStartup, tray b
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager, err := update.New(update.Config{CurrentVersion: "0.1.0", Source: source, PublicKey: publicText, InstallDir: programs,
+	manager, err := update.New(update.Config{CurrentVersion: baseline, Source: source, PublicKey: publicText, InstallDir: programs,
 		StateDir: filepath.Join(data, "updates"), Executable: "ToolNest.exe", Network: netManager, Gate: &update.LocalGate{}})
 	if err != nil {
 		t.Fatal(err)
@@ -231,7 +294,7 @@ func entryUpdateFixture(t *testing.T, oldExe, newExe string, failStartup, tray b
 	}
 	resultPath := filepath.Join(data, "updates", "helper-result.json")
 	for {
-		result, err := os.ReadFile(resultPath)
+		result, err := readHelperResult(resultPath)
 		if err == nil {
 			var report struct {
 				Error string `json:"error"`
@@ -274,12 +337,27 @@ func entryDigest(t *testing.T, path string) [32]byte {
 	return sha256.Sum256(data)
 }
 
-func entryArchive(t *testing.T, payload []byte) []byte {
+func entryVersion(t *testing.T, executable string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, executable, "--toolnest-build-info").Output()
+	if err != nil {
+		t.Fatal("read fixture identity", err)
+	}
+	var identity struct{ Version, Channel string }
+	if json.Unmarshal(output, &identity) != nil || !regexp.MustCompile(`^\d+\.\d+\.\d+$`).MatchString(identity.Version) || (identity.Channel != "test" && identity.Channel != "manual-test") {
+		t.Fatal("explicit versioned TEST-ONLY fixture required")
+	}
+	return identity.Version
+}
+
+func entryArchive(t *testing.T, payload []byte, version string) []byte {
 	t.Helper()
 	var data bytes.Buffer
 	compressed := gzip.NewWriter(&data)
 	archive := tar.NewWriter(compressed)
-	descriptor, _ := json.Marshal(update.Descriptor{Version: "0.1.1", Target: "windows-amd64", Executable: "ToolNest.exe"})
+	descriptor, _ := json.Marshal(update.Descriptor{Version: version, Target: "windows-amd64", Executable: "ToolNest.exe"})
 	for _, file := range []struct {
 		name    string
 		content []byte

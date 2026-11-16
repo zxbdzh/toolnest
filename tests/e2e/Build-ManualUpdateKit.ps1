@@ -22,7 +22,8 @@ if ($publicKey -cne $policy.publicKey) { throw 'Do not silently rotate the exist
 if ((& $Go version) -cne 'go version go1.27.4 windows/amd64') { throw 'Pinned Go toolchain required.' }
 if ((& $MakeNSIS /VERSION) -cne 'v3.13') { throw 'Pinned NSIS 3.13 required.' }
 $kitID = [guid]::NewGuid().ToString('N')
-$root = Join-Path ([IO.Path]::GetTempPath()) ('toolnest-manual-update-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + $kitID.Substring(0,8))
+# 与签名夹具和私有桌面验收共用同一受限根，不能靠改 TEMP 让两端各自多嵌一层。
+$root = Join-Path (Join-Path ([IO.Path]::GetTempPath()) 'toolnest-acceptance') ('manual-update-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + $kitID.Substring(0,8))
 if (Test-Path -LiteralPath $root) { throw 'Output must be new.' }
 [void][IO.Directory]::CreateDirectory($root)
 $deliver = Join-Path $root '交付包'

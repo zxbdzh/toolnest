@@ -21,59 +21,25 @@ func (controller *Controller) openSnapshot(id string) {
 	controller.snapshotLists = [2]native.ListState{}
 }
 
-func (controller *Controller) operationNotice(context *native.Context) {
-	result := controller.view.Result
-	if result.ID == "" || result.ID == controller.dismissedResult {
-		return
-	}
-	native.Row(context.Key("operation-result")).FillWidth().Padding(10, 24).Gap(10).Background(context.Theme().Surface).Children(func() {
-		native.Column(context).Grow(1).MinWidth(0).Gap(3).Children(func() {
-			native.Text(context, result.Title).FontSize(13).FontWeight(600).Role(native.RoleStatus)
-			native.Text(context, result.Message).FontSize(12).TextColor(context.Theme().TextMuted).SingleLine().Tooltip(result.Message)
-		})
-		if result.SnapshotID != "" && result.Outcome == "success" {
-			label := "查看本次快照"
-			if result.Operation == "恢复 PATH" {
-				label = "查看恢复结果"
-			}
-			if native.Button(context, label).Height(32).Disabled(controller.busy()).Clicked() {
-				if result.Operation == "恢复 PATH" {
-					controller.resultShown = result
-					controller.openModal("operation-result")
-				} else {
-					controller.openSnapshot(result.SnapshotID)
-				}
-			}
-		}
-		if native.Button(context, "结果详情").Height(32).Clicked() {
-			controller.resultShown = result
-			controller.openModal("operation-result")
-		}
-		if native.Button(context, "知道了").Label("收起操作结果").Height(32).Clicked() {
-			controller.dismissedResult = result.ID
-		}
-	})
-}
-
 func (controller *Controller) operationResultDialog(context *native.Context) {
 	result := controller.resultShown
-	native.Text(context, result.Title).FontSize(18).FontWeight(600)
-	native.Text(context, result.Message).FontSize(13).Selectable()
+	native.Text(context, result.Title).FontSize(sectionSize(context)).FontWeight(600)
+	native.Text(context, result.Message).FontSize(detailSize(context)).Selectable()
 	for _, scope := range result.Scopes {
-		native.Text(context, scope.Name+"："+scope.Status).FontSize(13)
+		native.Text(context, scope.Name+"："+scope.Status).FontSize(detailSize(context))
 	}
 	if result.Details != "" {
 		native.Scroll(context).MaxHeight(170).Children(func() {
-			native.Text(context, result.Details).FontSize(12).Selectable()
+			native.Text(context, result.Details).FontSize(detailSize(context)).Selectable()
 		})
 	}
 	native.Row(context).Gap(8).Wrap().Children(func() {
 		if result.ProtectionID != "" {
-			if native.Button(context, "查看保护快照").Clicked() {
+			if secondaryButton(context, "查看保护快照", controlOptions{key: "view-protection"}).Clicked() {
 				controller.dismissModal()
 				controller.openSnapshot(result.ProtectionID)
 			}
-			if native.Button(context, "撤回这次恢复…").Disabled(controller.busy()).Clicked() {
+			if secondaryButton(context, "撤回这次恢复…", controlOptions{key: "undo-restore", disabled: controller.busy()}).Clicked() {
 				user, system := false, false
 				for _, scope := range result.Scopes {
 					user = user || scope.Name == "用户 PATH"
@@ -84,18 +50,18 @@ func (controller *Controller) operationResultDialog(context *native.Context) {
 			}
 		}
 		if result.Operation == "恢复 PATH" && result.Outcome != "success" && result.SnapshotID != "" {
-			if native.Button(context, "重新预览恢复").Disabled(controller.busy()).Clicked() {
+			if secondaryButton(context, "重新预览恢复", controlOptions{key: "restore-preview", disabled: controller.busy()}).Clicked() {
 				controller.dismissModal()
 				controller.beginRestore(result.SnapshotID)
 			}
 		}
 		if result.Operation == "手动备份" && result.Outcome != "success" {
-			if native.Button(context, "重试备份").Disabled(controller.busy()).Clicked() {
+			if secondaryButton(context, "重试备份", controlOptions{key: "retry-backup", disabled: controller.busy()}).Clicked() {
 				controller.dismissModal()
 				controller.launch("重试备份", controller.actions.Backup)
 			}
 		}
-		if native.Button(context, "复制结果").Clicked() {
+		if secondaryButton(context, "复制结果", controlOptions{key: "copy-result", icon: copyIcon}).Clicked() {
 			lines := []string{result.Title, result.Message}
 			for _, scope := range result.Scopes {
 				lines = append(lines, scope.Name+"："+scope.Status)
@@ -103,7 +69,7 @@ func (controller *Controller) operationResultDialog(context *native.Context) {
 			lines = append(lines, result.Details)
 			controller.actions.Copy(strings.Join(lines, "\n"))
 		}
-		if native.PrimaryButton(context, "关闭结果").Clicked() {
+		if primaryButton(context, "关闭结果", controlOptions{key: "close-result"}).Clicked() {
 			controller.dismissModal()
 		}
 	})

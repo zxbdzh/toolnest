@@ -10,18 +10,37 @@ import (
 
 func field(context *native.Context, label string, content func()) {
 	width, _ := context.Size()
-	labelWidth := float32(126)
+	labelWidth := float32(136)
 	if width < 780 {
-		labelWidth = 100
+		labelWidth = 108
 	}
-	native.Row(context.Key(label)).MinHeight(48).Gap(12).Children(func() {
-		native.Text(context, label).Width(labelWidth).FontSize(14)
-		native.Row(context).Grow(1).MinWidth(0).Gap(8).Wrap().Children(content)
+	native.Row(context.Key(label)).MinHeight(40).Gap(10).AlignItems(native.Center).Children(func() {
+		native.Text(context, label).Width(labelWidth).FontSize(controlTextSize(context))
+		native.Row(context).Grow(1).MinWidth(0).Gap(8).Wrap().AlignItems(native.Center).Children(content)
 	})
 }
 
 func section(context *native.Context, title string) {
-	native.Text(context, title).FontSize(16).FontWeight(600).Margin(0, 0, 10, 0)
+	native.Text(context, title).FontSize(sectionSize(context)).FontWeight(600).Margin(0, 0, 5, 0)
+}
+
+// 标题与字段共用起点，仅保留有用途的图标，不添加装饰性副标题。
+func settingsGroup(context *native.Context, title string, icon *native.SVG) {
+	native.Row(context).Height(26).Gap(7).Margin(0, 0, 2, 0).AlignItems(native.Center).Children(func() {
+		if icon != nil {
+			native.Icon(context, icon).Width(15).Height(15).TextColor(context.Theme().TextMuted)
+		}
+		native.Text(context, title).FontSize(detailSize(context)).FontWeight(500).TextColor(context.Theme().TextMuted).Grow(1).MinWidth(0)
+	})
+}
+
+// 分类使用紧凑内嵌分段控件，与主题和字号选项保持同一按压、选中语言。
+func settingsTabs(context *native.Context, selected *int, labels ...string) bool {
+	before := *selected
+	native.Row(context.Key("settings-sections")).FillWidth().Height(44).AlignItems(native.Center).Children(func() {
+		segmentedControl(context, "settings-category", selected, labels...)
+	})
+	return *selected != before
 }
 
 func choice(context *native.Context, key string, target *string, labels, values []string) {
@@ -31,22 +50,26 @@ func choice(context *native.Context, key string, target *string, labels, values 
 			index = position
 		}
 	}
-	if native.Segmented(context.Key(key), &index, labels...).Height(36).FontSize(13).Changed() {
+	if segmentedControl(context, key, &index, labels...) {
 		*target = values[index]
 	}
 }
 
 func integerInput(context *native.Context, label string, value *int, minimum, maximum float64) {
 	number := float64(*value)
-	if native.NumberInput(context.Key(label), &number, minimum, maximum, 1).Width(110).Label(label).Changed() {
+	if numberInput(context, label, &number, minimum, maximum, label).Changed() {
 		*value = int(number)
 	}
 }
 
 func (controller *Controller) scheduleFields(context *native.Context, settings *app.Settings) {
 	field(context, "自动备份", func() { native.Switch(context, &settings.ScheduleEnabled).Label("启用自动备份") })
+	if !settings.ScheduleEnabled {
+		native.Text(context, "开启后会定时检查 PATH，有变化时才保存新快照。").FontSize(detailSize(context)).TextColor(context.Theme().TextMuted)
+		return
+	}
 	field(context, "计划模式", func() {
-		choice(context, "schedule-mode", &settings.ScheduleMode, []string{"每 N 小时", "每天定时"}, []string{"interval", "daily"})
+		choice(context, "schedule-mode", &settings.ScheduleMode, []string{"间隔备份", "每天定时"}, []string{"interval", "daily"})
 	})
 	if settings.ScheduleMode == "daily" {
 		field(context, "本地时间", func() {
@@ -64,186 +87,244 @@ func (controller *Controller) scheduleFields(context *native.Context, settings *
 }
 
 func (controller *Controller) schedulePage(context *native.Context) {
-	width, height := context.Size()
-	native.Row(context.Key("schedule-layout")).Height(min(320, max(220, height*0.43))).FillWidth().Gap(18).AlignItems(native.Stretch).Children(func() {
-		panel(context.Key("schedule-editor")).Grow(1).MinWidth(0).Padding(18, 22).Gap(8).Children(func() {
-			native.Text(context, "备份计划").FontSize(17).FontWeight(600)
-			// 草稿和实际计划分开展示，开启开关不冒充已经开始执行。
-			native.Scroll(context.Key("schedule-editor-scroll")).Grow(1).MinHeight(0).Children(func() {
-				native.Column(context).FillWidth().Gap(2).Children(func() {
-					controller.scheduleFields(context, &controller.draft)
-					if width < 900 {
-						status, detail := scheduleSummary(controller.view)
-						native.Text(context, "实际计划 · "+status+"\n"+detail).FontSize(12).TextColor(context.Theme().TextMuted).Padding(8, 0)
-					}
-				})
+	native.Scroll(context.Key("schedule-scroll")).Grow(1).MinHeight(0).Children(func() {
+		native.Column(context).FillWidth().MaxWidth(820).Gap(8).Children(func() {
+			sectionPanel(context, "schedule-editor").Padding(10, 14).Gap(6).Children(func() {
+				controller.scheduleFields(context, &controller.draft)
 			})
-			controller.draftButtons(context, true)
+			section(context, "当前计划")
+			// 展示已保存的状态，不把尚未提交的开关草稿当作正在运行的计划。
+			status, detail := scheduleSummary(controller.view)
+			native.Text(context, status).FontSize(sectionSize(context)).FontWeight(600)
+			native.Text(context, detail).FontSize(controlTextSize(context)).TextColor(context.Theme().TextMuted)
+			divider(context)
+			native.Text(context, "隐藏到托盘后继续备份，退出应用后暂停。休眠期间错过的计划，会在恢复运行后检查一次。").FontSize(controlTextSize(context)).TextColor(context.Theme().TextMuted)
+			if controller.view.LastPlanResult != "" {
+				native.Text(context, "最近结果 · "+controller.view.LastPlanResult).FontSize(controlTextSize(context))
+			}
+			if secondaryButton(context, "查看执行记录", controlOptions{key: "view-records"}).Clicked() {
+				controller.tab = 3
+			}
 		})
-		if width >= 900 {
-			panel(context.Key("schedule-status")).Width(300).Gap(14).Children(func() {
-				native.Row(context).Gap(12).Children(func() {
-					iconTile(context, clockIcon, 38)
-					native.Text(context, "实际运行状态").FontSize(15).FontWeight(600)
-				})
-				status, detail := scheduleSummary(controller.view)
-				native.Text(context, status).FontSize(18).FontWeight(600).TextColor(mistLink(context.Theme()))
-				native.Text(context, detail).FontSize(13).TextColor(context.Theme().TextMuted)
-				divider(context)
-				native.Text(context, "窗口或托盘运行时执行；环境无变化时只留记录。退出后暂停，错过的计划会合并补跑一次。").FontSize(13).TextColor(context.Theme().TextMuted)
-				native.Spacer(context)
-				native.Text(context, "失败后等待 5 分钟，最多重试一次。").FontSize(12).TextColor(context.Theme().TextMuted)
-			})
-		}
 	})
-	controller.records(context)
+	controller.draftButtons(context, true)
 }
 
 func (controller *Controller) settingsPage(context *native.Context) {
-	width, _ := context.Size()
-	if controller.settingsSection < 1 || controller.settingsSection > 4 {
+	if controller.settingsSection < 1 || controller.settingsSection > 5 {
 		controller.settingsSection = 1
 	}
-	wide := width >= 900
-	native.Row(context.Key("settings-layout")).Grow(1).MinHeight(0).FillWidth().MaxWidth(1110).AlignSelf(native.Center).AlignItems(native.Stretch).Gap(28).Children(func() {
-		if wide {
-			controller.settingsNavigation(context)
+	native.Column(context.Key("settings-content")).Grow(1).FillWidth().MinHeight(0).MaxWidth(880).Gap(4).Children(func() {
+		selected := 0
+		if controller.settingsSection == 4 {
+			selected = 2
+		} else if controller.settingsSection != 1 {
+			selected = 1
 		}
-		native.Column(context.Key("settings-content")).Grow(1).MinWidth(0).MinHeight(0).MaxWidth(820).Gap(16).Children(func() {
-			if !wide {
-				selected := controller.settingsSection - 1
-				if native.Segmented(context.Key("settings-sections"), &selected, "外观与启动", "公共代理", "数据", "更新").Height(36).FontSize(13).Changed() {
-					controller.settingsSection = selected + 1
+		if settingsTabs(context, &selected, "通用", "高级", "更新") {
+			controller.settingsSection = []int{1, 5, 4}[selected]
+		}
+		// 分类各自记住滚动位置；共享草稿不因切换分类或缩放窗口丢失。
+		native.Scroll(context.Key(fmt.Sprintf("settings-scroll-%d", controller.settingsSection))).Grow(1).MinHeight(0).Children(func() {
+			native.Column(context).FillWidth().Gap(14).Justify(native.Start).Padding(8, 0, 16, 0).Children(func() {
+				switch controller.settingsSection {
+				case 1:
+					controller.appearanceSettings(context)
+				case 2:
+					controller.advancedBack(context, "网络连接")
+					controller.networkSettings(context)
+				case 3:
+					controller.advancedBack(context, "备份存储")
+					controller.storageSettings(context)
+				case 4:
+					sectionPanel(context, "updates").Padding(10, 14).Gap(6).Children(func() { controller.updateSettings(context) })
+				case 5:
+					controller.advancedSettings(context)
 				}
-			}
-			// 分类各自记住滚动位置；共享草稿不因切换分类或缩放窗口丢失。
-			native.Scroll(context.Key(fmt.Sprintf("settings-scroll-%d", controller.settingsSection))).Grow(1).MinHeight(0).Children(func() {
-				native.Column(context).FillWidth().Gap(18).Children(func() {
-					switch controller.settingsSection {
-					case 1:
-						settingsHeading(context, settingsIcon, "外观与启动", "选择舒适的外观，设定打开与离开的方式。")
-						controller.appearanceSettings(context)
-					case 2:
-						settingsHeading(context, networkIcon, "公共网络代理", "集中管理 ToolNest 的连接方式，仅作用于本应用。")
-						controller.networkSettings(context)
-					case 3:
-						settingsHeading(context, archiveIcon, "数据与迁移", "让备份有处可寻，迁移前先确认，完成后再切换。")
-						controller.storageSettings(context)
-					case 4:
-						settingsHeading(context, updateIcon, "版本与更新", "后台准备，等你方便的时候再重启。")
-						panel(context.Key("updates")).Children(func() { controller.updateSettings(context) })
-					}
-					controller.statusbar(context)
-				})
 			})
-			controller.draftButtons(context, false)
 		})
+		controller.draftButtons(context, false)
 	})
 }
 
-func (controller *Controller) settingsNavigation(context *native.Context) {
-	theme := context.Theme()
-	native.Column(context.Key("settings-navigation")).Width(184).Padding(8, 0).Gap(6).Children(func() {
-		native.Text(context, "偏好设置").FontSize(12).TextColor(theme.TextMuted).Padding(8, 14, 12, 14)
-		for index, item := range []struct {
-			label string
-			icon  *native.SVG
-		}{{"外观与启动", settingsIcon}, {"公共代理", networkIcon}, {"数据", archiveIcon}, {"更新", updateIcon}} {
-			button := native.Button(context.Key(item.label), "").Label(item.label).FillWidth().Height(44).Padding(0, 14).Gap(12).Radius(10).Border(0, native.Transparent).Background(native.Transparent)
-			selected := controller.settingsSection == index+1
-			if selected {
-				button.Background(panelColor(theme)).Border(1, theme.Border).TextColor(mistLink(theme))
-			}
-			button.Children(func() {
-				native.Icon(context, item.icon).Width(18).Height(18).TextColor(mistLink(theme))
-				native.Text(context, item.label).FontSize(14).Grow(1)
-			})
-			if button.Clicked() {
-				controller.settingsSection = index + 1
-			}
+func (controller *Controller) advancedBack(context *native.Context, title string) {
+	native.Row(context).Gap(12).Children(func() {
+		if secondaryButton(context, "返回高级设置", controlOptions{key: "advanced-back", height: 34}).Clicked() {
+			controller.settingsSection = 5
 		}
-		native.Spacer(context)
-		native.Text(context, "设置按需保存\n切换分类会保留修改").FontSize(12).TextColor(theme.TextMuted).Padding(14)
+		native.Text(context, title).FontSize(sectionSize(context)).FontWeight(600)
 	})
 }
 
-func settingsHeading(context *native.Context, icon *native.SVG, title, detail string) {
-	width, _ := context.Size()
-	if width < 900 {
-		native.Text(context, detail).FontSize(13).TextColor(context.Theme().TextMuted)
-		return
-	}
-	native.Row(context).Gap(14).Padding(4, 0).Children(func() {
-		iconTile(context, icon, 44)
-		native.Column(context).Grow(1).MinWidth(0).Gap(6).Children(func() {
-			native.Text(context, title).FontSize(20).FontWeight(600)
-			native.Text(context, detail).FontSize(13).TextColor(context.Theme().TextMuted)
+func (controller *Controller) advancedSettings(context *native.Context) {
+	compactPanel(context, "advanced-options").Padding(0, 0).Dividers(1, context.Theme().Border).Children(func() {
+		preference(context, "网络连接", "仅影响 ToolNest 的联网功能", func() {
+			if secondaryButton(context, "配置代理", controlOptions{key: "configure-proxy"}).Clicked() {
+				controller.settingsSection = 2
+			}
+		})
+		preference(context, "备份存储", "查看快照目录或迁移已有数据", func() {
+			if secondaryButton(context, "管理存储", controlOptions{key: "manage-storage"}).Clicked() {
+				controller.settingsSection = 3
+			}
+		})
+		preference(context, "自启时隐藏窗口", "登录后安静地在托盘中运行", func() {
+			native.Switch(context, &controller.draft.StartInTray).Label("自启直接进入托盘").Disabled(!controller.draft.LaunchAtLogin)
 		})
 	})
 }
 
 func preference(context *native.Context, title, detail string, content func()) {
-	native.Row(context.Key(title)).MinHeight(62).Gap(16).Children(func() {
-		native.Column(context).Grow(1).MinWidth(0).Gap(5).Children(func() {
-			native.Text(context, title).FontSize(14)
-			if detail != "" {
-				native.Text(context, detail).FontSize(12).TextColor(context.Theme().TextMuted)
+	width, _ := context.Size()
+	row := native.Row(context.Key(title)).MinHeight(46).Gap(20).AlignItems(native.Center)
+	if width < 740 {
+		row.Column().AlignItems(native.Stretch).Gap(6).Padding(8, 0)
+	}
+	row.Children(func() {
+		label := native.Row(context).Gap(10).MinWidth(0).AlignItems(native.Center)
+		if width < 740 {
+			label.FillWidth()
+		} else {
+			label.Grow(1)
+		}
+		label.Children(func() {
+			var icon *native.SVG
+			switch title {
+			case "主题":
+				icon = eyeIcon
+			case "字号":
+				icon = textSizeIcon
+			case "开机自启":
+				icon = powerIcon
+			case "关闭窗口":
+				icon = windowCloseIcon
 			}
+			if icon != nil {
+				native.Row(context).Width(28).Height(28).Radius(9).Justify(native.Center).AlignItems(native.Center).
+					Background(context.Theme().Accent.Alpha(0.07)).Children(func() {
+					native.Icon(context, icon).Width(16).Height(16).TextColor(context.Theme().Accent)
+				})
+			}
+			native.Column(context).Grow(1).MinWidth(0).Gap(1).Children(func() {
+				native.Text(context, title).FontSize(controlTextSize(context))
+				if detail != "" {
+					native.Text(context, detail).FontSize(detailSize(context)).TextColor(context.Theme().TextMuted).LineHeight(1.35)
+				}
+			})
 		})
-		native.Row(context).Gap(8).Children(content)
+		native.Row(context).Gap(8).AlignItems(native.Center).Children(content)
 	})
 }
 
 func (controller *Controller) appearanceSettings(context *native.Context) {
-	panel(context.Key("appearance")).Gap(6).Children(func() {
-		preference(context, "主题", "明暗随系统，或固定为喜欢的外观", func() {
+	compactPanel(context, "appearance").Padding(0, 0).Gap(0).Dividers(1, context.Theme().Border).Children(func() {
+		preference(context, "主题", "", func() {
 			choice(context, "theme", &controller.draft.Theme, []string{"跟随系统", "浅色", "深色"}, []string{"system", "light", "dark"})
 		})
-		divider(context)
-		preference(context, "开机自启", "登录 Windows 后自动运行 ToolNest", func() {
+		preference(context, "字号", "", func() {
+			choice(context, "text-size", &controller.draft.TextSize, []string{"小", "标准", "大"}, []string{"compact", "standard", "comfortable"})
+		})
+		preference(context, "开机自启", "登录后在后台运行", func() {
 			if native.Switch(context, &controller.draft.LaunchAtLogin).Label("开机自启").Changed() && controller.draft.LaunchAtLogin {
 				controller.draft.StartInTray = true
 			}
 		})
-		divider(context)
-		preference(context, "自启进入托盘", "安静地在后台待命", func() {
-			native.Switch(context, &controller.draft.StartInTray).Label("自启直接进入托盘").Disabled(!controller.draft.LaunchAtLogin)
-		})
-		divider(context)
-		preference(context, "关闭窗口", "托盘运行时仍会执行备份计划", func() {
+		preference(context, "关闭窗口", "", func() {
 			choice(context, "close-behavior", &controller.draft.CloseBehavior, []string{"每次询问", "隐藏托盘", "退出应用"}, []string{"ask", "tray", "exit"})
 		})
 		if !controller.view.TrayAvailable {
-			native.Text(context, "当前托盘不可用，关闭时会再次确认。").FontSize(13).TextColor(context.Theme().Warning)
+			native.Text(context, "当前托盘不可用，关闭时会再次确认。").FontSize(detailSize(context)).TextColor(context.Theme().Warning).Padding(8, 0)
 		}
+	})
+	// 快捷键和通用设置共享同一套字段行语法，只换分组标题和图标。
+	compactPanel(context, "shortcuts").Padding(0, 0).Gap(0).Dividers(1, context.Theme().Border).Children(func() {
+		settingsGroup(context, "快捷操作", keyboardIcon)
+		field(context, "切换页面", func() {
+			native.Text(context, "Ctrl+1–5").FontSize(controlTextSize(context)).Font("Cascadia Mono")
+			native.Text(context, "概览、PATH 保护、快照、自动备份、活动记录").FontSize(detailSize(context)).TextColor(context.Theme().TextMuted)
+		})
+		field(context, "打开设置", func() {
+			native.Text(context, "Ctrl+,").FontSize(controlTextSize(context)).Font("Cascadia Mono")
+		})
+		field(context, "重新读取", func() {
+			native.Text(context, "Ctrl+R").FontSize(controlTextSize(context)).Font("Cascadia Mono")
+		})
 	})
 }
 
+func (controller *Controller) generalStatus(context *native.Context) {
+	theme := context.Theme()
+	count, latest := validSnapshotSummary(controller.view.Snapshots)
+	status, frequency := scheduleSummary(controller.view)
+	rows := []struct {
+		label, value, detail string
+		action               func()
+	}{
+		{"PATH 条目", fmt.Sprintf("用户 %d 项 · 系统 %d 项", len(controller.view.User.Entries), len(controller.view.System.Entries)), scopeSummary(controller.view.User) + " · " + scopeSummary(controller.view.System), func() { controller.page, controller.tab = "path", 0 }},
+		{"快照保护", fmt.Sprintf("%d 份可用", count), "手动清理前保留 · 恢复前自动创建保护快照", func() { controller.page, controller.tab = "path", 1 }},
+		{"自动备份", status, frequency, func() { controller.page, controller.tab = "path", 2 }},
+	}
+	if count > 0 {
+		rows[1].value += " · 最近 " + displayTime(latest.CreatedAt)
+	}
+	if controller.view.Settings.ScheduleEnabled {
+		rows[2].value += " · " + frequency
+	}
+	for index, row := range rows {
+		value, detail, action := row.value, row.detail, row.action
+		native.Row(context.Key(fmt.Sprintf("general-status-%d", index))).MinHeight(52).Gap(9).AlignItems(native.Center).Children(func() {
+			native.Icon(context, statusIcon(index)).Width(16).Height(16).TextColor(theme.TextMuted)
+			native.Text(context, row.label).FontSize(controlTextSize(context)).Width(88).TextColor(theme.TextMuted)
+			native.Column(context).Grow(1).MinWidth(0).Gap(1).Children(func() {
+				native.Text(context, value).FontSize(controlTextSize(context)).FontWeight(500).SingleLine().Tooltip(value)
+				native.Text(context, detail).FontSize(detailSize(context)).TextColor(theme.TextMuted).SingleLine().Tooltip(detail)
+			})
+			if compactAction(context, "查看", controlOptions{key: fmt.Sprintf("general-status-open-%d", index), label: "查看" + row.label, icon: chevronRightIcon}).Clicked() {
+				action()
+			}
+		})
+		if index < len(rows)-1 {
+			divider(context)
+		}
+	}
+}
+
+func statusIcon(index int) *native.SVG {
+	switch index {
+	case 0:
+		return shieldIcon
+	case 1:
+		return archiveIcon
+	default:
+		return clockIcon
+	}
+}
+
 func (controller *Controller) networkSettings(context *native.Context) {
-	panel(context.Key("network")).Gap(10).Children(func() {
+	compactPanel(context, "network").Padding(0, 0).Gap(4).Children(func() {
 		field(context, "代理模式", func() {
 			choice(context, "proxy-mode", &controller.draft.ProxyMode, []string{"跟随系统", "直连", "自定义"}, []string{"system", "direct", "custom"})
 		})
 		divider(context)
 		if controller.draft.ProxyMode == "custom" {
 			field(context, "代理地址", func() {
-				native.TextInput(context, &controller.draft.ProxyURL).Placeholder("http://127.0.0.1:7890 或 socks5://…").Label("代理地址").Height(38).FontSize(13).Grow(1).MinWidth(150)
+				textInput(context, "proxy-url", &controller.draft.ProxyURL, "http://127.0.0.1:7890 或 socks5://…", "代理地址")
 			})
 			field(context, "代理账号", func() {
-				native.TextInput(context, &controller.draft.ProxyUsername).Placeholder("可选").Label("代理账号").Height(38).FontSize(13).Grow(1)
+				textInput(context, "proxy-username", &controller.draft.ProxyUsername, "可选", "代理账号")
 			})
 			field(context, "代理密码", func() {
-				native.TextInput(context, &controller.draft.ProxyPassword).Password().Placeholder("留空保留已保存密码").Label("代理密码").Height(38).FontSize(13).Grow(1)
+				textInput(context, "proxy-password", &controller.draft.ProxyPassword, "留空保留已保存密码", "代理密码").Password()
 			})
 		} else {
 			detail := "沿用系统或环境变量中的代理设置。"
 			if controller.draft.ProxyMode == "direct" {
 				detail = "ToolNest 直接连接网络，不使用代理。"
 			}
-			native.Text(context, detail).FontSize(13).TextColor(context.Theme().TextMuted).Padding(8, 0)
+			native.Text(context, detail).FontSize(controlTextSize(context)).TextColor(context.Theme().TextMuted).Padding(8, 0)
 		}
 		field(context, "连接测试", func() {
-			if native.Button(context, "测试连接").Label("使用草稿测试连接").Height(36).FontSize(13).Disabled(controller.busy() || controller.view.ProxyTesting).Clicked() {
+			if secondaryButton(context, "测试连接", controlOptions{key: "test-proxy", label: "使用草稿测试连接", disabled: controller.busy() || controller.view.ProxyTesting}).Clicked() {
 				settings := controller.draft
 				if err := validateDraft(settings); err != nil {
 					controller.localError = err.Error()
@@ -252,60 +333,64 @@ func (controller *Controller) networkSettings(context *native.Context) {
 				}
 			}
 			if controller.view.ProxyTesting {
-				native.Text(context, "正在测试…").FontSize(13).Role(native.RoleStatus)
+				native.Text(context, "正在测试…").FontSize(controlTextSize(context)).Role(native.RoleStatus)
 			}
 		})
 	})
-	native.Text(context, "测试使用当前填写的配置，不会保存。自定义代理失败时不会切换为直连，也不会改变系统代理。").FontSize(13).TextColor(context.Theme().TextMuted)
+	native.Text(context, "测试使用当前填写的配置，不会保存。自定义代理失败时不会切换为直连，也不会改变系统代理。").FontSize(detailSize(context)).TextColor(context.Theme().TextMuted)
 }
 
 func (controller *Controller) storageSettings(context *native.Context) {
-	panel(context.Key("storage")).Children(func() {
+	compactPanel(context, "storage").Padding(0, 0).Gap(4).Children(func() {
 		field(context, "快照目录", func() {
 			directory := controller.view.Settings.SnapshotDir
-			native.TextInput(context, &directory).ReadOnly(true).Label("当前快照目录").FontSize(13).Grow(1).MinWidth(150)
-			if native.Button(context, "迁移…").Disabled(controller.busy()).Clicked() {
+			textInput(context, "snapshot-directory", &directory, "", "当前快照目录").ReadOnly(true)
+			if secondaryButton(context, "迁移…", controlOptions{key: "migrate-storage", disabled: controller.busy()}).Clicked() {
 				controller.chooseSnapshotDirectory()
 			}
 		})
 		native.Row(context).Gap(8).Children(func() {
-			if native.Button(context, "重新检查目录").Disabled(controller.busy()).Clicked() {
+			if secondaryButton(context, "重新检查目录", controlOptions{key: "recheck-storage", disabled: controller.busy()}).Clicked() {
 				controller.launch("重新检查目录", controller.actions.Refresh)
 			}
-			if native.Button(context, "复制快照目录").Clicked() {
+			if secondaryButton(context, "复制快照目录", controlOptions{key: "copy-storage"}).Clicked() {
 				controller.actions.Copy(controller.view.Settings.SnapshotDir)
 			}
 		})
 		divider(context)
 		preference(context, "用户数据", "查看本机保存的配置与记录", func() {
-			if native.Button(context, "打开数据目录").FontSize(13).Clicked() {
+			if secondaryButton(context, "打开数据目录", controlOptions{key: "open-data"}).Clicked() {
 				controller.actions.OpenDataDirectory()
 			}
 		})
 		divider(context)
-		preference(context, "旧版快照", fmt.Sprintf("检测到 %d 份可导入快照", controller.view.LegacyCount), func() {
-			if native.Button(context, "导入旧版快照…").FontSize(13).Disabled(controller.view.LegacyCount == 0 || controller.busy()).Clicked() {
-				controller.openModal("import")
-			}
-		})
-		controller.legacyEntries(context)
+		if controller.view.LegacyCount > 0 {
+			preference(context, "旧版快照", fmt.Sprintf("检测到 %d 份可导入快照", controller.view.LegacyCount), func() {
+				if secondaryButton(context, "导入旧版快照…", controlOptions{key: "import-legacy", disabled: controller.busy()}).Clicked() {
+					controller.openModal("import")
+				}
+			})
+		}
+		if len(controller.view.LegacyEntries) > 0 {
+			controller.legacyEntries(context)
+		}
 	})
-	native.Text(context, "目录迁移与旧版导入会单独确认；已有快照不会自动清理。").FontSize(13).TextColor(context.Theme().TextMuted)
+	native.Text(context, "目录迁移与旧版导入会单独确认；已有快照不会自动清理。").FontSize(detailSize(context)).TextColor(context.Theme().TextMuted)
 }
 
 func (controller *Controller) updateSettings(context *native.Context) {
 	update := controller.view.Update
 	native.Row(context).Gap(16).Padding(6, 0, 12, 0).Children(func() {
-		iconTile(context, nestIcon, 52)
+		iconTile(context, nestIcon, 44)
 		version := update.Current
 		if version == "" {
 			version = controller.view.Version
 		}
 		native.Column(context).Grow(1).Gap(5).Children(func() {
-			native.Text(context, "ToolNest").Font("Segoe UI").FontSize(23).FontWeight(600)
-			native.Text(context, "当前版本 "+version).FontSize(13).TextColor(context.Theme().TextMuted).Selectable()
+			native.Text(context, "ToolNest").FontSize(pageTitleSize(context)).FontWeight(500)
+			native.Text(context, "当前版本 "+version).FontSize(controlTextSize(context)).TextColor(context.Theme().TextMuted).Selectable()
 		})
-		native.Text(context, updateLabel(update.State)).Role(native.RoleStatus).FontSize(13).TextColor(mistLink(context.Theme()))
+		native.Text(context, updateLabel(update.State)).Role(native.RoleStatus).FontSize(controlTextSize(context)).TextColor(context.Theme().TextMuted)
 	})
 	divider(context)
 	preference(context, "后台检查", "自动检查是否有可用的新版本", func() {
@@ -317,41 +402,41 @@ func (controller *Controller) updateSettings(context *native.Context) {
 	})
 	divider(context)
 	if update.Available != "" {
-		native.Text(context, "可用版本 "+update.Available).FontSize(14).FontWeight(600)
+		native.Text(context, "可用版本 "+update.Available).FontSize(controlTextSize(context)).FontWeight(600)
 	}
 	controller.updateProgress(context)
 	if update.Error != "" {
 		if update.RolledBack {
-			native.Text(context, "已回退至 "+controller.view.Version+"，快照和设置已保留。").FontSize(13).FontWeight(600)
+			native.Text(context, "已回退至 "+controller.view.Version+"，快照和设置已保留。").FontSize(controlTextSize(context)).FontWeight(600)
 		}
-		native.Text(context, update.Error).FontSize(13).TextColor(context.Theme().Danger).Selectable()
+		native.Text(context, update.Error).FontSize(controlTextSize(context)).TextColor(context.Theme().Danger).Selectable()
 		if update.State == "blocked" && len(controller.view.Problems) > 0 {
-			native.Text(context, "先处理数据目录或读取问题，再重新尝试更新。").FontSize(13)
-			if native.Button(context, "处理数据问题").Clicked() {
+			native.Text(context, "先处理数据目录或读取问题，再重新尝试更新。").FontSize(controlTextSize(context))
+			if secondaryButton(context, "处理数据问题", controlOptions{key: "handle-data-problem"}).Clicked() {
 				controller.settingsSection = 3
 			}
 		}
 		if update.RecoveryPath != "" && update.ErrorCode == "recovery" {
-			native.Text(context, "恢复文件位置："+update.RecoveryPath).FontSize(12).Selectable()
-			if native.Button(context, "复制恢复位置").Clicked() {
+			native.Text(context, "恢复文件位置："+update.RecoveryPath).FontSize(detailSize(context)).Selectable()
+			if secondaryButton(context, "复制恢复位置", controlOptions{key: "copy-recovery"}).Clicked() {
 				controller.actions.Copy(update.RecoveryPath)
 			}
 		}
 	}
 	native.Row(context).Gap(8).Wrap().Children(func() {
 		working := update.NetworkPhase != "" || update.State == "checking" || update.State == "downloading" || update.State == "verifying"
-		if native.Button(context, "检查更新").Height(36).FontSize(13).Disabled(controller.pending != "" || working).Clicked() {
+		if secondaryButton(context, "检查更新", controlOptions{key: "check-update", disabled: controller.pending != "" || working}).Clicked() {
 			controller.launchBackground("检查更新", controller.actions.CheckUpdate)
 		}
 		if working {
 			if cancellation, ok := controller.actions.(interface{ CancelDownload() }); ok {
-				if native.Button(context, "取消检查／下载").Clicked() {
+				if secondaryButton(context, "取消检查／下载", controlOptions{key: "cancel-download"}).Clicked() {
 					cancellation.CancelDownload()
 				}
 			}
 		}
 		if update.Available != "" || update.State == "confirmed" {
-			if native.Button(context, "版本说明").Height(36).FontSize(13).Clicked() {
+			if secondaryButton(context, "版本说明", controlOptions{key: "release-notes"}).Clicked() {
 				controller.openModal("release-notes")
 			}
 		}
@@ -361,55 +446,58 @@ func (controller *Controller) updateSettings(context *native.Context) {
 			if update.Error != "" {
 				label = "重新下载"
 			}
-			if native.PrimaryButton(context, label).Label("下载更新").Height(36).FontSize(13).Disabled(controller.pending != "").Clicked() {
+			if primaryButton(context, label, controlOptions{key: "download-update", label: "下载更新", disabled: controller.pending != ""}).Clicked() {
 				controller.launchBackground("准备下载更新", controller.actions.DownloadUpdate)
 			}
 		}
 		if update.State == "ready" || update.State == "waiting" || update.State == "waiting-safe-switch" {
-			if native.PrimaryButton(context, "重启更新…").Height(36).FontSize(13).Disabled(working || controller.view.PendingExit != "").Clicked() {
+			if primaryButton(context, "重启更新…", controlOptions{key: "restart-update", disabled: working || controller.view.PendingExit != ""}).Clicked() {
 				controller.openModal("restart")
 			}
-			if native.Button(context, "下次打开时更新").Height(36).FontSize(13).Clicked() {
+			if secondaryButton(context, "下次打开时更新", controlOptions{key: "update-next-open"}).Clicked() {
 				controller.dismissUpdate()
 			}
 		}
 		if update.State == "blocked" {
-			if native.Button(context, "重新尝试此版本…").Disabled(working || len(controller.view.Problems) > 0).Clicked() {
+			if secondaryButton(context, "重新尝试此版本…", controlOptions{key: "retry-update", disabled: working || len(controller.view.Problems) > 0}).Clicked() {
 				controller.openModal("retry-update")
 			}
 		}
 		if update.Error != "" {
 			if update.ErrorCode == "network" || update.ErrorCode == "proxy" || update.ErrorCode == "credentials" || update.ErrorCode == "network-config" || update.ErrorCode == "http-407" {
-				if native.Button(context, "修改公共代理").FontSize(13).Clicked() {
+				if secondaryButton(context, "修改公共代理", controlOptions{key: "edit-proxy"}).Clicked() {
 					controller.settingsSection = 2
 				}
 			}
-			if native.Button(context, "更新错误详情").FontSize(13).Clicked() {
+			if secondaryButton(context, "更新错误详情", controlOptions{key: "update-error-detail"}).Clicked() {
 				controller.showText("更新错误详情", update.Error+"\n\n"+update.Details)
 			}
 		}
 		if update.SourceURL != "" {
 			if actions, ok := controller.actions.(interface{ OpenUpdateSource() }); ok {
-				if native.Button(context, "打开发布页面").FontSize(13).Clicked() {
+				if secondaryButton(context, "打开发布页面", controlOptions{key: "open-update-source"}).Clicked() {
 					actions.OpenUpdateSource()
 				}
 			}
 		}
 	})
 	if update.State == "ready" {
-		native.Text(context, "普通退出不会重新打开应用；下次启动会先应用已校验的更新。隐藏到托盘仍继续使用当前版本。").FontSize(12).TextColor(context.Theme().TextMuted)
+		native.Text(context, "普通退出不会重新打开应用；下次启动会先应用已校验的更新。隐藏到托盘仍继续使用当前版本。").FontSize(detailSize(context)).TextColor(context.Theme().TextMuted)
 	}
 	if update.NewerVersion != "" {
-		native.Text(context, "另有新版 "+update.NewerVersion+"，先完成已准备的更新后再检查。").FontSize(12).TextColor(context.Theme().TextMuted)
+		native.Text(context, "另有新版 "+update.NewerVersion+"，先完成已准备的更新后再检查。").FontSize(detailSize(context)).TextColor(context.Theme().TextMuted)
 	}
 	checked := "尚未检查过更新"
 	if update.LastCheck != "" {
 		checked = "最近检查 · " + update.LastCheck
 	}
-	native.Text(context, checked).FontSize(12).TextColor(context.Theme().TextMuted)
+	native.Text(context, checked).FontSize(detailSize(context)).TextColor(context.Theme().TextMuted)
 	if update.PreparedAt != "" {
-		native.Text(context, "准备完成 · "+update.PreparedAt).FontSize(12).TextColor(context.Theme().TextMuted)
+		native.Text(context, "准备完成 · "+update.PreparedAt).FontSize(detailSize(context)).TextColor(context.Theme().TextMuted)
 	}
+	// 字体随程序内嵌使用；许可条款要求软件中明确注明，不单独分发字体文件。
+	native.Text(context, "界面字体：MiSans（小米）· 许可详情见安装目录 ThirdParty-MiSans.txt").
+		FontSize(detailSize(context)).TextColor(context.Theme().TextMuted).Selectable()
 }
 
 func (controller *Controller) legacyEntries(context *native.Context) {
@@ -417,7 +505,7 @@ func (controller *Controller) legacyEntries(context *native.Context) {
 		native.Row(context.Key("legacy-" + entry.ID)).MinHeight(40).Gap(8).Children(func() {
 			native.Text(context, entry.Kind+" · "+entry.Description).Grow(1).SingleLine().Tooltip(entry.Description)
 			if !entry.Owned {
-				native.Text(context, "归属未确认，不改动").FontSize(12).TextColor(context.Theme().TextMuted)
+				native.Text(context, "归属未确认，不改动").FontSize(detailSize(context)).TextColor(context.Theme().TextMuted)
 				return
 			}
 			label := "停用旧入口…"
@@ -425,7 +513,7 @@ func (controller *Controller) legacyEntries(context *native.Context) {
 			if entry.Disabled {
 				label, kind = "撤销停用…", "undo-legacy"
 			}
-			if native.Button(context, label).Disabled(controller.busy()).Clicked() {
+			if secondaryButton(context, label, controlOptions{key: "legacy-" + entry.ID, disabled: controller.busy()}).Clicked() {
 				controller.legacyID = entry.ID
 				controller.openModal(kind)
 			}
@@ -434,19 +522,22 @@ func (controller *Controller) legacyEntries(context *native.Context) {
 }
 
 func (controller *Controller) draftButtons(context *native.Context, scheduleOnly bool) {
-	native.Row(context.Key("draft-actions")).MinHeight(44).Gap(8).Justify(native.End).Children(func() {
+	if (!scheduleOnly && controller.draft == controller.base) || (scheduleOnly && sameSchedule(controller.draft, controller.base)) {
+		return
+	}
+	native.Row(context.Key("draft-actions")).MinHeight(44).Gap(8).Justify(native.End).AlignItems(native.Center).Children(func() {
 		dirty := controller.draft != controller.base
 		if scheduleOnly {
 			dirty = !sameSchedule(controller.draft, controller.base)
 		}
 		if dirty {
-			native.Text(context, "有未保存的修改").FontSize(12).TextColor(context.Theme().TextMuted).Grow(1)
+			native.Text(context, "有未保存的修改").FontSize(detailSize(context)).TextColor(context.Theme().TextMuted).Grow(1)
 		} else if !scheduleOnly {
-			native.Text(context, "修改后保存生效").FontSize(12).TextColor(context.Theme().TextMuted).Grow(1)
+			native.Text(context, "修改后保存生效").FontSize(detailSize(context)).TextColor(context.Theme().TextMuted).Grow(1)
 		} else {
 			native.Spacer(context)
 		}
-		if native.Button(context, "取消修改").Height(36).FontSize(13).Disabled(!dirty || controller.busy()).Clicked() {
+		if secondaryButton(context, "取消修改", controlOptions{key: "cancel-draft", disabled: !dirty || controller.busy()}).Clicked() {
 			if scheduleOnly {
 				copySchedule(&controller.draft, controller.view.Settings)
 			} else {
@@ -459,7 +550,7 @@ func (controller *Controller) draftButtons(context *native.Context, scheduleOnly
 		if scheduleOnly {
 			label = "保存计划"
 		}
-		if native.PrimaryButton(context, label).Height(36).FontSize(13).Disabled(!dirty || controller.busy()).Clicked() {
+		if primaryButton(context, label, controlOptions{key: "save-draft", disabled: !dirty || controller.busy()}).Clicked() {
 			controller.saveDraft(scheduleOnly)
 		}
 	})

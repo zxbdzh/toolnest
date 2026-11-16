@@ -83,7 +83,7 @@ func (actions *testActions) Quit() {}
 func fixture() *testActions {
 	return &testActions{state: app.View{
 		Version: "test", TrayAvailable: true,
-		Settings:  app.Settings{Theme: "system", ProxyMode: "system", CloseBehavior: "ask", OnboardingDone: true, ScheduleMode: "interval", IntervalHours: 6},
+		Settings:  app.Settings{Theme: "system", TextSize: "standard", ProxyMode: "system", CloseBehavior: "ask", OnboardingDone: true, ScheduleMode: "interval", IntervalHours: 6},
 		User:      app.Scope{Exists: true, Type: "REG_EXPAND_SZ", Text: "C:\\One;;C:\\One", Entries: []app.Entry{{Index: 1, Text: "C:\\One"}, {Index: 2, Text: ""}, {Index: 3, Text: "C:\\One"}}},
 		System:    app.Scope{Exists: true, Type: "REG_SZ", Text: "C:\\Windows", Entries: []app.Entry{{Index: 1, Text: "C:\\Windows"}}},
 		Snapshots: []app.Snapshot{{ID: "snapshot-1", CreatedAt: "2026-11-12 12:00", Source: "手动", Summary: "测试快照", User: app.Scope{Exists: true, Type: "REG_SZ", Text: "C:\\Old", Entries: []app.Entry{{Index: 1, Text: "C:\\Old"}}}}},
@@ -130,12 +130,12 @@ func TestNativeLayoutsAndTabs(t *testing.T) {
 		if !tester.HasText("PATH 保护") {
 			t.Fatalf("missing PATH at width %v", width)
 		}
-		for _, label := range []string{"快照", "自动备份", "当前 PATH", "应用设置"} {
+		for _, label := range []string{"快照", "自动备份", "PATH 保护", "应用设置"} {
 			if err := tester.Click(label); err != nil {
 				t.Fatalf("width %v click %s: %v", width, label, err)
 			}
 		}
-		if !tester.HasText("外观与启动") {
+		if !tester.HasText("通用") {
 			t.Fatal("settings not rendered")
 		}
 	}
@@ -364,7 +364,7 @@ func TestNarrowSnapshotDetailAndDefaultDeleteSelection(t *testing.T) {
 	if len(controller.selectedSnapshots()) != 0 {
 		t.Fatal("snapshot delete selection was not empty by default")
 	}
-	if err := tester.Click("2026-11-12 12:00"); err != nil {
+	if err := tester.Click("查看快照 snapshot-1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := tester.Click("打开所选快照"); err != nil {
@@ -378,6 +378,38 @@ func TestNarrowSnapshotDetailAndDefaultDeleteSelection(t *testing.T) {
 	}
 	if controller.snapshotDetailOpen {
 		t.Fatal("back did not restore list")
+	}
+}
+
+func TestSnapshotDeleteSelectionUsesAccessibleCheckbox(t *testing.T) {
+	actions := fixture()
+	controller := New(actions)
+	controller.page = "path"
+	controller.tab = 1
+	tester := native.NewTester(controller.render, 1180, 780)
+	if _, exists := tester.AccessByRole(native.RoleCheckBox, "选择快照 snapshot-1"); !exists {
+		t.Fatal("snapshot delete checkbox is missing from the accessibility tree")
+	}
+	if err := tester.Click("选择快照 snapshot-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(controller.selectedSnapshots()) != 1 || controller.selectedSnapshots()[0] != "snapshot-1" {
+		t.Fatalf("delete checkbox did not select the snapshot: %#v", controller.selectedSnapshots())
+	}
+	if !tester.HasText("删除选中 (1)") {
+		t.Fatal("delete button did not report selected count")
+	}
+	if err := tester.Click("删除选中 (1)"); err != nil {
+		t.Fatal(err)
+	}
+	if !tester.HasText("删除 1 份快照？") {
+		t.Fatal("delete confirmation was not opened")
+	}
+	if err := tester.Click("取消"); err != nil {
+		t.Fatal(err)
+	}
+	if len(controller.selectedSnapshots()) != 1 {
+		t.Fatal("cancel unexpectedly cleared delete selection")
 	}
 }
 
@@ -401,7 +433,7 @@ func TestNativeRenderThemesAndScale(t *testing.T) {
 
 func TestNarrowDialogsKeepCriticalActionsVisible(t *testing.T) {
 	for _, scenario := range []struct{ kind, action string }{
-		{"restore", "确认恢复所选范围"}, {"onboarding", "保存并开始"}, {"close", "确认关闭"}, {"import", "确认导入"},
+		{"restore", "确认恢复所选范围"}, {"onboarding", "开始使用"}, {"close", "确认关闭"}, {"import", "确认导入"},
 	} {
 		controller := New(fixture())
 		controller.synchronize()
@@ -446,17 +478,46 @@ func TestNativeRenderReview(t *testing.T) {
 		{"proxy-light", 1180, 780, false, "settings", 0, 2},
 		{"proxy-narrow", 620, 520, false, "settings", 0, 2},
 		{"updates-light", 1180, 780, false, "settings", 0, 4},
+		{"snapshots-dark", 1180, 780, true, "path", 1, 0},
 		{"snapshots-light", 1180, 780, false, "path", 1, 0},
+		{"snapshots-selected", 1180, 780, false, "path", 1, 0},
+		{"snapshot-comparison", 1180, 780, false, "path", 1, 0},
+		{"snapshot-comparison-wide", 2048, 1114, false, "path", 1, 0},
 		{"schedule", 1180, 780, false, "path", 2, 0},
 	} {
-		controller := New(fixture())
+		actions := fixture()
+		// 预览图补齐几条只读合成数据，展示列表密度；测试夹具不接触用户真实 PATH。
+		actions.state.Snapshots = append(actions.state.Snapshots,
+			app.Snapshot{ID: "snapshot-2", CreatedAt: "2026-11-14 09:30", Source: "automatic", Summary: "用户 PATH 4 项 · 系统 PATH 2 项",
+				User:   app.Scope{Exists: true, Type: "REG_EXPAND_SZ", Text: "C:\\Saved", Entries: []app.Entry{{Index: 1, Text: "C:\\Saved"}}},
+				System: app.Scope{Exists: true, Type: "REG_SZ", Text: "C:\\Windows", Entries: []app.Entry{{Index: 1, Text: "C:\\Windows"}}}},
+			app.Snapshot{ID: "snapshot-3", CreatedAt: "2026-11-13 18:20", Source: "before-restore", Summary: "用户 PATH 4 项 · 系统 PATH 2 项",
+				User: app.Scope{Exists: true, Type: "REG_EXPAND_SZ", Text: "C:\\Old", Entries: []app.Entry{{Index: 1, Text: "C:\\Old"}}}},
+		)
+		actions.state.Records = []app.Record{
+			{At: "2026-11-15 08:42", Operation: "手动备份", Outcome: "success", Message: "快照已保存"},
+			{At: "2026-11-14 09:30", Operation: "自动备份", Outcome: "success", Message: "环境无变化，未创建新快照"},
+			{At: "2026-11-13 18:20", Operation: "恢复 PATH", Outcome: "success", Message: "用户 PATH 已恢复"},
+		}
+		// 快照详情底部的执行记录必须有关联 ID，才能作为真实信息而不是夹具占位文案出现。
+		actions.state.Records[1].SnapshotID = "snapshot-2"
+		// 三页交付截图展示安静的常态；操作反馈仅在状态栏提供入口，不在预览夹具里预置回执。
+		controller := New(actions)
 		controller.page, controller.tab, controller.settingsSection = screen.page, screen.tab, screen.settings
+		if screen.name == "snapshots-selected" {
+			controller.snapshotID = "snapshot-2"
+		}
+		if strings.HasPrefix(screen.name, "snapshot-comparison") {
+			controller.snapshotTab = 2
+		}
 		if screen.settings == 2 {
 			controller.synchronize()
 			controller.draft.ProxyMode, controller.draft.ProxyURL = "custom", "http://127.0.0.1:7890"
 		}
-		tester := native.NewTester(controller.render, screen.width, screen.height)
-		tester.SetDark(screen.dark)
+		// 与用户电脑一致地关闭 Windows 透明效果，仍须显示应用自己的磨砂。
+		// 深色预览从第一帧就以深色启动，避免截到浅深切换时的起始帧。
+		tester := native.NewTesterWith(controller.render, screen.width, screen.height,
+			native.TesterOptions{Dark: screen.dark, Preferences: native.Preferences{TextScale: 1, ReduceTransparency: true}})
 		filename := filepath.Join(directory, screen.name+".png")
 		file, err := os.Create(filename)
 		if err != nil {
@@ -474,6 +535,40 @@ func TestNativeRenderReview(t *testing.T) {
 	}
 }
 
+// 即使 Windows 不提供系统材质或关闭透明效果，应用完整合成的像素也不能出现透明黑洞。
+func TestSystemMaterialFallbackKeepsOpaqueSurfaces(t *testing.T) {
+	for _, scenario := range []struct {
+		name        string
+		vibrancy    bool
+		preferences native.Preferences
+	}{
+		{"no-system-material", false, native.Preferences{}},
+		{"reduce-transparency", true, native.Preferences{ReduceTransparency: true}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			controller := New(fixture())
+			tester := native.NewTesterWith(controller.render, 1180, 780,
+				native.TesterOptions{Preferences: scenario.preferences})
+			tester.SetVibrancy(scenario.vibrancy)
+			if !tester.HasText("当前环境") || !tester.HasText("最近快照") {
+				t.Fatal("opaque fallback lost the home page content")
+			}
+			image := tester.Image()
+			for _, point := range []struct {
+				name string
+				x, y int
+			}{
+				{"sidebar", 100, 300}, {"topbar", 400, 20}, {"content", 600, 400},
+			} {
+				_, _, _, alpha := image.At(point.x, point.y).RGBA()
+				if alpha < 0xff00 {
+					t.Fatalf("%s fallback left %s transparent", scenario.name, point.name)
+				}
+			}
+		})
+	}
+}
+
 func TestSettingsCategoriesPreserveDraftAndKeepSaveVisible(t *testing.T) {
 	for _, width := range []int{620, 900, 1180} {
 		for _, dark := range []bool{false, true} {
@@ -481,7 +576,10 @@ func TestSettingsCategoriesPreserveDraftAndKeepSaveVisible(t *testing.T) {
 			controller.ShowSettings()
 			tester := native.NewTester(controller.render, width, 780)
 			tester.SetDark(dark)
-			if err := tester.Click("公共代理"); err != nil {
+			if err := tester.Click("高级"); err != nil {
+				t.Fatal(err)
+			}
+			if err := tester.Click("配置代理"); err != nil {
 				t.Fatal(err)
 			}
 			if err := tester.Click("自定义"); err != nil {
@@ -494,7 +592,7 @@ func TestSettingsCategoriesPreserveDraftAndKeepSaveVisible(t *testing.T) {
 			tester.ClickAt(address.Bounds.X+address.Bounds.W/2, address.Bounds.Y+address.Bounds.H/2)
 			tester.Type("http://127.0.0.1:7890")
 			tester.SetSize(width, 520)
-			for _, label := range []string{"数据", "更新", "外观与启动", "公共代理"} {
+			for _, label := range []string{"返回高级设置", "管理存储", "更新", "通用", "高级", "配置代理"} {
 				if err := tester.Click(label); err != nil {
 					t.Fatalf("width %d category %s: %v", width, label, err)
 				}

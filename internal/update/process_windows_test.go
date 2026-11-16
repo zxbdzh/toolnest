@@ -163,6 +163,33 @@ func TestActualWindowsSharingViolation(t *testing.T) {
 	fixture.assertOld()
 }
 
+func TestWindowsTransientExecutableSharingViolationRecovers(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.prepare()
+	path, err := windows.UTF16PtrFromString(filepath.Join(fixture.manager.config.InstallDir, "ToolNest.exe"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 模拟退出后短暂存在的只读映射；释放之前不共享 DELETE，
+	// 因此能验证旧版不会在暂时占用时被错误回退。
+	handle, err := windows.CreateFile(path, windows.GENERIC_READ, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.AfterFunc(250*time.Millisecond, func() { _ = windows.CloseHandle(handle) })
+	result, err := fixture.manager.Apply(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Version != "1.1.0" {
+		t.Fatalf("transient executable lock selected wrong version: %#v", result)
+	}
+	data, err := os.ReadFile(filepath.Join(fixture.manager.config.InstallDir, "ToolNest.exe"))
+	if err != nil || string(data) != "signed new version" {
+		t.Fatalf("transient executable lock did not complete replacement: %v", err)
+	}
+}
+
 func TestWindowsStateLockReleasedByOwner(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.lock")
 	release, err := lockState(path)

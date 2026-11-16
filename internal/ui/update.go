@@ -18,7 +18,7 @@ func (controller *Controller) dismissUpdate() {
 	}
 }
 
-func (controller *Controller) updateNotice(context *native.Context) {
+func (controller *Controller) updateMessage() string {
 	update := controller.view.Update
 	message, version := "", update.Available
 	switch update.State {
@@ -37,15 +37,23 @@ func (controller *Controller) updateNotice(context *native.Context) {
 	}
 	notice := update.State + ":" + version
 	if message == "" || notice == controller.dismissedUpdate || notice == update.DismissedVersion {
+		return ""
+	}
+	return message
+}
+
+func (controller *Controller) updateNotice(context *native.Context) {
+	message := controller.updateMessage()
+	if message == "" {
 		return
 	}
-	native.Row(context.Key("update-notice")).FillWidth().Padding(8, 24).Gap(8).Background(context.Theme().SurfaceHover).Children(func() {
-		native.Icon(context, updateIcon).Width(18).Height(18).TextColor(mistLink(context.Theme()))
-		native.Text(context, message).FontSize(12).Grow(1).MinWidth(0).SingleLine().Tooltip(message).Role(native.RoleStatus)
-		if native.Button(context, "查看更新").Height(30).FontSize(12).Clicked() {
+	noticePanel(context, "update-notice").Row().Gap(8).Children(func() {
+		native.Icon(context, updateIcon).Width(18).Height(18).TextColor(context.Theme().TextMuted)
+		native.Text(context, message).FontSize(controlTextSize(context)).Grow(1).MinWidth(0).SingleLine().Tooltip(message).Role(native.RoleStatus)
+		if secondaryButton(context, "查看更新", controlOptions{key: "view-update", icon: eyeIcon, height: 34}).Clicked() {
 			controller.ShowUpdates()
 		}
-		if native.Button(context, "稍后").Label("稍后提醒更新").Height(30).FontSize(12).Clicked() {
+		if secondaryButton(context, "稍后", controlOptions{key: "dismiss-update", label: "稍后提醒更新", height: 34}).Clicked() {
 			controller.dismissUpdate()
 		}
 	})
@@ -62,10 +70,10 @@ func (controller *Controller) exitNotice(context *native.Context) {
 	if controller.view.ExitCommitting {
 		message = "正在保存并安全退出…"
 	}
-	native.Row(context.Key("exit-wait")).FillWidth().Padding(12, 24).Gap(12).Background(context.Theme().SurfaceHover).Children(func() {
-		native.Text(context, message).FontSize(13).Role(native.RoleStatus).Grow(1)
+	noticePanel(context, "exit-wait").Row().Gap(12).Children(func() {
+		native.Text(context, message).FontSize(detailSize(context)).Role(native.RoleStatus).Grow(1)
 		if actions, ok := controller.actions.(interface{ CancelExit() }); ok {
-			if native.Button(context, "取消等待").Height(32).Disabled(controller.view.ExitCommitting).Clicked() {
+			if secondaryButton(context, "取消等待", controlOptions{key: "cancel-exit", height: 34, disabled: controller.view.ExitCommitting}).Clicked() {
 				actions.CancelExit()
 			}
 		}
@@ -79,11 +87,11 @@ func (controller *Controller) updateProgress(context *native.Context) {
 		phase = update.State
 	}
 	if phase == "checking" {
-		native.Text(context, "正在检查更新…").Role(native.RoleStatus).FontSize(13)
+		native.Text(context, "正在检查更新…").Role(native.RoleStatus).FontSize(detailSize(context))
 		return
 	}
 	if phase == "verifying" {
-		native.Text(context, "下载完成，正在校验签名与文件…").Role(native.RoleStatus).FontSize(13)
+		native.Text(context, "下载完成，正在校验签名与文件…").Role(native.RoleStatus).FontSize(detailSize(context))
 		return
 	}
 	if phase != "downloading" {
@@ -97,7 +105,7 @@ func (controller *Controller) updateProgress(context *native.Context) {
 			message += fmt.Sprintf(" · %s/s", downloadSize(int64(update.BytesPerSecond)))
 		}
 	}
-	native.Text(context, message).FontSize(12).TextColor(context.Theme().TextMuted).Role(native.RoleStatus)
+	native.Text(context, message).FontSize(detailSize(context)).TextColor(context.Theme().TextMuted).Role(native.RoleStatus)
 }
 
 func downloadSize(bytes int64) string {
@@ -111,7 +119,7 @@ func downloadSize(bytes int64) string {
 }
 
 func (controller *Controller) releaseNotes(context *native.Context) {
-	native.Text(context, "本次更新").FontSize(16).FontWeight(600)
+	native.Text(context, "本次更新").FontSize(controlTextSize(context)).FontWeight(600)
 	notes := controller.view.Update.Notes
 	if notes == "" {
 		notes = "版本说明暂不可用，可以稍后重新检查。已经完成校验的文件会保留在本机。"
@@ -129,9 +137,9 @@ func (controller *Controller) releaseNotes(context *native.Context) {
 				if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") {
 					line = "• " + line[2:]
 				}
-				text := native.Text(context, line).FontSize(13).Selectable()
+				text := native.Text(context, line).FontSize(detailSize(context)).Selectable()
 				if heading {
-					text.FontWeight(600).FontSize(15)
+					text.FontWeight(600).FontSize(controlTextSize(context))
 				}
 			}
 		})

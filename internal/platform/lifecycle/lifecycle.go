@@ -10,9 +10,10 @@ import (
 )
 
 var (
-	ErrConflict    = errors.New("entry changed or belongs to another application")
-	ErrNotOwned    = errors.New("entry ownership is not confirmed")
-	ErrUnsupported = errors.New("Windows desktop integration is unavailable")
+	ErrConflict        = errors.New("entry changed or belongs to another application")
+	ErrNotOwned        = errors.New("entry ownership is not confirmed")
+	ErrUnsupported     = errors.New("Windows desktop integration is unavailable")
+	ErrTrayUnavailable = errors.New("托盘暂不可用，后台任务继续运行；需要时可重新打开 ToolNest")
 )
 
 const AutostartArgument = "--autostart"
@@ -197,13 +198,11 @@ func (c *Controller) SetStatus(message string, failed bool) {
 			return
 		}
 		if !t.Available() {
-			c.hooks.ShowMain()
-			c.hooks.ReportError(errors.New("托盘已不可用，窗口已恢复"))
+			c.ProbeTray()
 			return
 		}
 		if err := t.SetState(message, failed); err != nil {
-			c.hooks.ShowMain()
-			c.hooks.ReportError(err)
+			c.hooks.ReportError(fmt.Errorf("%w: %v", ErrTrayUnavailable, err))
 		}
 	})
 }
@@ -222,10 +221,10 @@ func (c *Controller) ProbeTray() {
 	lost := c.trayLost
 	c.trayLost = !available
 	c.mu.Unlock()
-	// 托盘消失后立即恢复主入口；持续失效不重复抢焦点或弹出同一错误。
+	// 锁屏、息屏和 Explorer 重启都可能让图标暂时没有 Bounds；后台探测不能改变用户的窗口选择。
+	// 即使托盘持续不可用，手动再次启动仍可通过单实例通道唤回窗口。
 	if !available && !lost {
-		c.hooks.ShowMain()
-		c.hooks.ReportError(errors.New("托盘已不可用，窗口已恢复"))
+		c.hooks.ReportError(ErrTrayUnavailable)
 	}
 }
 func (c *Controller) watchTray(stop <-chan struct{}) {

@@ -71,10 +71,20 @@ public static class UpdateDesktop {
   }
  }
  function Invoke-Control([string]$label) {
+  $labels=@($label)
+  if($label-ceq '稍后再说'){$labels+=@('先看看')}
+  # 新版设置把代理收进「高级 → 配置代理」；旧夹具仍可能直接使用旧版入口。
+  if($label-ceq '公共代理'-and !(Has-Text '^公共代理$')){
+   Invoke-Control '高级'
+   if(Has-Text '^配置代理$'){Invoke-Control '配置代理'}
+   return
+  }
+  if($label-ceq '更新'-and !(Has-Text '^更新$')){Invoke-Control '关于与更新';return}
+  if($label-ceq '应用设置'-and !(Has-Text '^应用设置$')){Invoke-Control '设置';return}
   $result.step='invoke: '+$label
   $deadline=[DateTime]::UtcNow.AddSeconds(8)
   do{
-   $matching=@(Controls|Where-Object {$_.Current.Name-ceq $label-and $_.Current.IsEnabled-and $_.Current.ControlType-ne [Windows.Automation.ControlType]::Text})
+   $matching=@(Controls|Where-Object {$_.Current.Name-cin $labels-and $_.Current.IsEnabled-and $_.Current.ControlType-ne [Windows.Automation.ControlType]::Text})
    if($matching.Count-eq 1){break};Start-Sleep -Milliseconds 100
   }while([DateTime]::UtcNow-lt $deadline)
   if($matching.Count-ne 1){throw ('Ambiguous or missing update control: '+$label)}
@@ -111,7 +121,8 @@ public static class UpdateDesktop {
   if(!$script:activeProcess.WaitForExit(10000)){throw 'Updated application did not exit normally'}
  }
  $private=Join-Path $configuration.Root 'private-fixture'
- $fixtureArguments='--out "'+$private+'" --archive "'+(Join-Path $configuration.SignedUpdate ('update-'+$configuration.TargetVersion+'.tar.gz'))+'" --signature-file "'+(Join-Path $configuration.SignedUpdate ('update-'+$configuration.TargetVersion+'.sig'))+'" --public-key-file "'+(Join-Path $configuration.SignedUpdate 'update.pub')+'" --version '+$configuration.TargetVersion+' --current-version '+$configuration.BaselineVersion+' --duration 3m'
+ # 两条串行更新链可能超过 3 分钟；本地夹具保持到统计读取完成，避免收尾时服务先退出。
+ $fixtureArguments='--out "'+$private+'" --archive "'+(Join-Path $configuration.SignedUpdate ('update-'+$configuration.TargetVersion+'.tar.gz'))+'" --signature-file "'+(Join-Path $configuration.SignedUpdate ('update-'+$configuration.TargetVersion+'.sig'))+'" --public-key-file "'+(Join-Path $configuration.SignedUpdate 'update.pub')+'" --version '+$configuration.TargetVersion+' --current-version '+$configuration.BaselineVersion+' --duration 12m'
  $fixtureStart=[Diagnostics.ProcessStartInfo]::new($configuration.FixtureRunner,$fixtureArguments)
  $fixtureStart.UseShellExecute=$false;$fixtureStart.CreateNoWindow=$true
  $fixtureStart.RedirectStandardOutput=$true;$fixtureStart.RedirectStandardError=$true

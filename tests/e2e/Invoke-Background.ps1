@@ -4,7 +4,7 @@ param(
  [ValidateSet('smoke','inspect','entry','update-ui')][string]$Scenario='inspect',
  [string]$Go='go.exe',
  [string]$EvidenceRoot=(Join-Path ([IO.Path]::GetTempPath()) 'toolnest-background'),
- [ValidateRange(10,180)][int]$TimeoutSeconds=90,
+ [ValidateRange(10,900)][int]$TimeoutSeconds=90,
  [string]$PreviousApplication,
  [string]$UpdatedApplication,
  [string]$SignedUpdate
@@ -61,8 +61,14 @@ try {
   }else{
    & $Go build -trimpath -buildvcs=false -o $application .
    if($LASTEXITCODE){throw 'Application build failed'}
+   if($Scenario -eq 'inspect'){
+    # 复用同一私有桌面检查真实隐藏窗口，不为界面验收创建第二套安装器或更新测试入口。
+    & $Go test -c -mod=readonly -o (Join-Path $programs 'entry.test.exe') ./cmd/toolnest
+    if($LASTEXITCODE){throw 'Hidden native window tests compilation failed'}
+   }
   }
   $output=Join-Path $run 'evidence'
+  # 双协议更新链与本机夹具寿命需要超过 3 分钟；runner 仍按具体场景强制自己的上限。
   & $runner --application $application --worker $worker --out $output --scenario $Scenario --timeout ($TimeoutSeconds.ToString()+'s') @entryArguments
   if($LASTEXITCODE){throw ('Private desktop test failed; evidence: '+$output)}
   $isolation=Get-Content -LiteralPath (Join-Path $output 'isolation.json') -Raw|ConvertFrom-Json

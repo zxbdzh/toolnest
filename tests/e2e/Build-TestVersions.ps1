@@ -19,7 +19,8 @@ if($SigningKeyDirectory){
     foreach($name in @('TEST-ONLY','update.key','update.pub')){if(!(Test-Path -LiteralPath (Join-Path $SigningKeyDirectory $name) -PathType Leaf)){throw 'Existing external TEST-ONLY signing key files are required.'}}
     if($UpdateRepository-ceq $sourcePolicy.repository-and (Get-Content -LiteralPath (Join-Path $SigningKeyDirectory 'update.pub') -Raw).Trim()-cne $sourcePolicy.publicKey){throw 'Existing signing public key differs from the pinned published test source; key rotation requires a new baseline.'}
 }
-$root=Join-Path ([IO.Path]::GetTempPath()) ('toolnest-versions-'+(Get-Date -Format yyyyMMdd-HHmmss)+'-'+[guid]::NewGuid().ToString('N').Substring(0,8))
+ # 签名工具只接受系统临时验收根内的输出；沿用 runner 的 reserved 约定，避免夹具构建中途被拒绝。
+ $root=Join-Path (Join-Path ([IO.Path]::GetTempPath()) 'toolnest-acceptance') ('versions-'+(Get-Date -Format yyyyMMdd-HHmmss)+'-'+[guid]::NewGuid().ToString('N').Substring(0,8))
 [void][IO.Directory]::CreateDirectory($root)
 $Utf8=[Text.UTF8Encoding]::new($false)
 function Invoke-Checked([string]$File,[string[]]$Arguments){& $File @Arguments;if($LASTEXITCODE){throw "Command failed ($LASTEXITCODE): $File"}}

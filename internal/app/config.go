@@ -19,7 +19,7 @@ type config struct {
 
 func defaultConfig(root string) config {
 	return config{Version: 1, Settings: Settings{
-		Theme: "system", CloseBehavior: "ask", StartInTray: true, SnapshotDir: filepath.Join(root, "snapshots"),
+		Theme: "system", TextSize: "standard", CloseBehavior: "ask", StartInTray: true, SnapshotDir: filepath.Join(root, "snapshots"),
 		ScheduleMode: "interval", IntervalHours: 6, DailyHour: 9, ProxyMode: "system", AutoCheck: true, AutoDownload: true,
 	}, Schedule: core.Schedule{Mode: "interval", Hours: 6, Hour: 9}}
 }
@@ -87,6 +87,10 @@ func saveConfig(root string, value config) error {
 func validateSettings(value Settings) error {
 	if value.Theme != "system" && value.Theme != "light" && value.Theme != "dark" {
 		return errors.New("主题无效")
+	}
+	// 旧配置没有字号字段时按标准档兼容；未知值不猜测，拒绝写入以免界面尺寸失控。
+	if value.TextSize != "" && value.TextSize != "compact" && value.TextSize != "standard" && value.TextSize != "comfortable" {
+		return errors.New("字号无效")
 	}
 	if value.CloseBehavior != "ask" && value.CloseBehavior != "tray" && value.CloseBehavior != "quit" && value.CloseBehavior != "exit" {
 		return errors.New("关闭行为无效")

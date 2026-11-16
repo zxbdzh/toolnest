@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"toolnest/internal/app"
 )
@@ -12,6 +13,15 @@ import (
 type pathPane struct {
 	query    string
 	selected int
+}
+
+func displayTime(value string) string {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return value
+	}
+	// 只转换显示格式；记录中的原始时区与精度仍保留，便于追溯。
+	return parsed.Local().Format("2006-01-02 15:04")
 }
 
 func filterEntries(entries []app.Entry, query string) []app.Entry {
@@ -72,6 +82,10 @@ func displayChanges(before, after app.Scope, scope string) []app.Change {
 }
 
 func validateDraft(settings app.Settings) error {
+	// 字号只接受三档语义值；空值兼容旧配置，由服务层按标准档补齐。
+	if settings.TextSize != "" && settings.TextSize != "compact" && settings.TextSize != "standard" && settings.TextSize != "comfortable" {
+		return fmt.Errorf("请选择有效的字号")
+	}
 	if settings.ScheduleEnabled {
 		switch settings.ScheduleMode {
 		case "interval":

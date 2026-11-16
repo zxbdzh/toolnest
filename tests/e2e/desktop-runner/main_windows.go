@@ -78,7 +78,8 @@ func run() error {
 		return err
 	}
 	maximum := 3 * time.Minute
-	if *scenario == "sandbox" || *scenario == "installed-kit" {
+	// HTTP 与 SOCKS5 两条完整更新链串行执行，含验签、重启和首帧确认；允许与安装链相同的上限。
+	if *scenario == "sandbox" || *scenario == "installed-kit" || *scenario == "update-ui" {
 		maximum = 15 * time.Minute
 	}
 	if flags.NArg() != 0 || !filepath.IsAbs(*root) || !filepath.IsAbs(*worker) || !filepath.IsAbs(*application) || *timeout < 5*time.Second || *timeout > maximum || (*scenario != "smoke" && *scenario != "inspect" && *scenario != "entry" && *scenario != "update-ui" && *scenario != "sandbox" && *scenario != "installed-kit") {

@@ -62,8 +62,8 @@ func (controller *Controller) dialogs(context *native.Context) {
 	kind := controller.modal
 	dialog := native.DialogBase(context.Key("dialog-"+kind), &controller.modalOpen, func(backdrop, panel native.Element) {
 		backdrop.Background(native.RGBA(0, 0, 0, 0.3))
-		panel.Width(min(840, width-32)).MaxHeight(height-32).Padding(20).Gap(12).Radius(8).
-			Background(context.Theme().Background).Border(1, context.Theme().Border)
+		floatingSurface(context, panel.Width(min(840, width-32)).MaxHeight(height-32).Padding(14, 18).Gap(8)).
+			Transition(motionTransition(context))
 		switch kind {
 		case "restore":
 			controller.restoreDialog(context, min(420, height-270))
@@ -78,19 +78,19 @@ func (controller *Controller) dialogs(context *native.Context) {
 			if version == "" {
 				version = controller.view.Version
 			}
-			native.Text(context, "版本说明 · "+version).FontSize(18).FontWeight(600)
+			native.Text(context, "版本说明 · "+version).FontSize(sectionSize(context)).FontWeight(600)
 			controller.releaseNotes(context)
-			if native.Button(context, "关闭说明").Clicked() {
+			if secondaryButton(context, "关闭说明", controlOptions{key: "close-release-notes"}).Clicked() {
 				controller.dismissModal()
 			}
 		case "text":
-			native.Text(context, controller.textTitle).FontSize(18).Bold()
+			native.Text(context, controller.textTitle).FontSize(sectionSize(context)).Bold()
 			native.TextArea(context, &controller.textDetail).ReadOnly(true).Height(min(430, height-180)).FillWidth().Label("完整内容").Font("Cascadia Mono")
 			native.Row(context).Gap(8).Justify(native.End).Children(func() {
-				if native.Button(context, "复制完整内容").Clicked() {
+				if secondaryButton(context, "复制完整内容", controlOptions{key: "copy-text", icon: copyIcon}).Clicked() {
 					controller.actions.Copy(controller.textDetail)
 				}
-				if native.PrimaryButton(context, "关闭详情").Clicked() {
+				if primaryButton(context, "关闭详情", controlOptions{key: "close-text"}).Clicked() {
 					controller.dismissModal()
 				}
 			})
@@ -111,9 +111,9 @@ func (controller *Controller) dialogs(context *native.Context) {
 }
 
 func (controller *Controller) restoreDialog(context *native.Context, tableHeight float32) {
-	native.Text(context, "恢复 PATH 快照").FontSize(18).Bold()
-	native.Text(context, "方向：当前 PATH → 所选快照。默认仅恢复发起用户；系统范围需单独授权。").FontSize(12).TextColor(context.Theme().TextMuted)
-	native.Text(context, "快照："+controller.snapshotID).FontSize(12).SingleLine()
+	native.Text(context, "恢复 PATH 快照").FontSize(sectionSize(context)).Bold()
+	native.Text(context, "方向：当前 PATH → 所选快照。默认仅恢复发起用户；系统范围需单独授权。").FontSize(detailSize(context)).TextColor(context.Theme().TextMuted)
+	native.Text(context, "快照："+controller.snapshotID).FontSize(detailSize(context)).SingleLine()
 	native.Row(context).Gap(20).Children(func() {
 		changed := native.Checkbox(context, &controller.restoreUser, "用户 PATH").Disabled(controller.busy()).Changed()
 		changed = native.Checkbox(context, &controller.restoreSystem, "系统 PATH（请求管理员授权）").Disabled(controller.busy()).Changed() || changed
@@ -129,15 +129,15 @@ func (controller *Controller) restoreDialog(context *native.Context, tableHeight
 			controller.changesView(context, controller.preview.Changes)
 		}
 	})
-	native.Text(context, "确认后先核对预览是否过期、获取所需权限并创建保护快照；任何前置失败都不开始写入。取消授权取消整次恢复。").FontSize(12).TextColor(context.Theme().TextMuted)
+	native.Text(context, "确认后先核对预览是否过期、获取所需权限并创建保护快照；任何前置失败都不开始写入。取消授权取消整次恢复。").FontSize(detailSize(context)).TextColor(context.Theme().TextMuted)
 	native.Row(context).Gap(8).Justify(native.End).Children(func() {
-		if native.Button(context, "取消恢复").Clicked() {
+		if secondaryButton(context, "取消恢复", controlOptions{key: "cancel-restore"}).Clicked() {
 			controller.dismissModal()
 		}
-		if native.Button(context, "重新预览").Disabled(controller.busy() || (!controller.restoreUser && !controller.restoreSystem)).Clicked() {
+		if secondaryButton(context, "重新预览", controlOptions{key: "reload-restore-preview", disabled: controller.busy() || (!controller.restoreUser && !controller.restoreSystem)}).Clicked() {
 			controller.loadPreview()
 		}
-		if native.PrimaryButton(context, "确认恢复所选范围").Disabled(controller.busy() || !controller.previewReady || (!controller.restoreUser && !controller.restoreSystem)).Clicked() {
+		if primaryButton(context, "确认恢复所选范围", controlOptions{key: "confirm-restore", disabled: controller.busy() || !controller.previewReady || (!controller.restoreUser && !controller.restoreSystem)}).Clicked() {
 			preview := controller.preview
 			controller.dismissModal()
 			controller.launch("提交恢复请求", func() { controller.actions.Restore(preview) })
@@ -146,7 +146,7 @@ func (controller *Controller) restoreDialog(context *native.Context, tableHeight
 }
 
 func (controller *Controller) closeDialog(context *native.Context) {
-	native.Text(context, "关闭 ToolNest").FontSize(18).Bold()
+	native.Text(context, "关闭 ToolNest").FontSize(sectionSize(context)).Bold()
 	if controller.busy() {
 		native.Text(context, "正在执行操作。可取消关闭继续等待；业务层未允许安全退出时保留窗口，不会中途强杀写入。").TextColor(context.Theme().Warning)
 	}
@@ -155,14 +155,14 @@ func (controller *Controller) closeDialog(context *native.Context) {
 		native.Radio(context, &controller.closeChoice, "exit", "退出应用，停止应用内计划")
 	})
 	if !controller.view.TrayAvailable {
-		native.Text(context, "托盘当前不可用，只能保持窗口或安全退出。").FontSize(12).TextColor(context.Theme().Warning)
+		native.Text(context, "托盘当前不可用，只能保持窗口或安全退出。").FontSize(detailSize(context)).TextColor(context.Theme().Warning)
 	}
 	native.Checkbox(context, &controller.rememberClose, "记住这次选择（可在设置中修改）")
 	native.Row(context).Gap(8).Justify(native.End).Children(func() {
-		if native.Button(context, "取消关闭").Clicked() {
+		if secondaryButton(context, "取消关闭", controlOptions{key: "cancel-close"}).Clicked() {
 			controller.dismissModal()
 		}
-		if native.PrimaryButton(context, "确认关闭").Disabled(controller.closeChoice == "tray" && !controller.view.TrayAvailable).Clicked() {
+		if primaryButton(context, "确认关闭", controlOptions{key: "confirm-close", disabled: controller.closeChoice == "tray" && !controller.view.TrayAvailable}).Clicked() {
 			behavior, remember := controller.closeChoice, controller.rememberClose
 			controller.dismissModal()
 			controller.actions.RequestClose(behavior, remember)
@@ -171,29 +171,21 @@ func (controller *Controller) closeDialog(context *native.Context) {
 }
 
 func (controller *Controller) onboardingDialog(context *native.Context) {
-	native.Text(context, "开始使用 ToolNest").FontSize(18).Bold()
-	native.Text(context, "读取 PATH 不会修改注册表。自动备份、自启和托盘行为由你确认后启用。").FontSize(12).TextColor(context.Theme().TextMuted)
+	native.Text(context, "开始使用 ToolNest").FontSize(sectionSize(context)).Bold()
+	native.Text(context, "先为当前 PATH 留一份备份。以后安装新工具，可以随时查看变化，或恢复到之前的状态。").FontSize(detailSize(context)).TextColor(context.Theme().TextMuted)
 	_, supportsInitialBackup := controller.actions.(interface{ CompleteOnboardingWithBackup(app.Settings, bool) })
 	native.Checkbox(context, &controller.initialBackup, "开始时创建首份快照（不修改 PATH）").Disabled(!supportsInitialBackup)
-	controller.scheduleFields(context, &controller.onboarding)
-	field(context, "开机自启", func() {
-		if native.Switch(context, &controller.onboarding.LaunchAtLogin).Label("引导开机自启").Changed() && controller.onboarding.LaunchAtLogin {
-			controller.onboarding.StartInTray = true
-		}
-	})
-	field(context, "自启进入托盘", func() {
-		native.Switch(context, &controller.onboarding.StartInTray).Label("引导进入托盘").Disabled(!controller.onboarding.LaunchAtLogin)
-	})
+	native.Text(context, "自动备份和开机自启可稍后开启。").FontSize(detailSize(context)).TextColor(context.Theme().TextMuted)
 	if controller.view.LegacyCount > 0 {
-		native.Textf(context, "发现 %d 份旧快照；开始后可在设置中确认导入，不会自动启用旧计划。", controller.view.LegacyCount).FontSize(12)
+		native.Textf(context, "发现 %d 份旧快照；开始后可在设置中确认导入，不会自动启用旧计划。", controller.view.LegacyCount).FontSize(detailSize(context))
 	}
 	native.Row(context).Gap(8).Justify(native.End).Children(func() {
-		if native.Button(context, "稍后再说").Disabled(controller.busy()).Clicked() {
+		if secondaryButton(context, "先看看", controlOptions{key: "onboarding-skip", disabled: controller.busy()}).Clicked() {
 			settings := controller.view.Settings
 			controller.dismissModal()
 			controller.launch("跳过首次引导", func() { controller.actions.CompleteOnboarding(settings, true) })
 		}
-		if native.PrimaryButton(context, "保存并开始").Disabled(controller.busy()).Clicked() {
+		if primaryButton(context, "开始使用", controlOptions{key: "onboarding-start", disabled: controller.busy()}).Clicked() {
 			settings := controller.onboarding
 			if err := validateDraft(settings); err != nil {
 				controller.modalError = err.Error()
@@ -241,20 +233,20 @@ func (controller *Controller) confirmDialog(context *native.Context, kind string
 	case "retry-update":
 		title, body, confirm = "重新尝试此版本？", "这个版本曾启动失败。确认后重新下载并验证，完成前继续使用当前版本；不会立即重启。", "确认重新下载"
 	}
-	native.Text(context, title).FontSize(18).Bold()
+	native.Text(context, title).FontSize(sectionSize(context)).Bold()
 	native.Scroll(context).MaxHeight(280).Children(func() { native.Text(context, body).Selectable() })
 	native.Row(context).Gap(8).Justify(native.End).Children(func() {
 		cancel := "取消"
 		if kind == "restart" {
 			cancel = "稍后更新"
 		}
-		if native.Button(context, cancel).Clicked() {
+		if secondaryButton(context, cancel, controlOptions{key: "confirm-cancel"}).Clicked() {
 			if kind == "restart" {
 				controller.dismissUpdate()
 			}
 			controller.dismissModal()
 		}
-		if native.PrimaryButton(context, confirm).Disabled(controller.busy() && kind != "restart" || kind == "restart" && controller.draft != controller.base).Clicked() {
+		if primaryButton(context, confirm, controlOptions{key: "confirm-action", disabled: controller.busy() && kind != "restart" || kind == "restart" && controller.draft != controller.base}).Clicked() {
 			controller.dismissModal()
 			switch kind {
 			case "delete":

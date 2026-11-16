@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -83,7 +84,9 @@ type desktop struct {
 	hidden         bool
 	lastTrayState  string
 	lastTrayFailed bool
+	trayStateValid bool
 	systemError    atomic.Pointer[string]
+	trayError      atomic.Pointer[string]
 	detachClose    func()
 	requireUpdate  atomic.Bool
 	stderr         io.Writer
@@ -102,11 +105,11 @@ func (actions desktopActions) View() app.View {
 		view.LegacyCount = 0
 		view.Isolated = true
 	}
-	if message := actions.host.systemError.Load(); message != nil {
+	if message := actions.host.errorText(); message != "" {
 		if view.Error != "" {
 			view.Error += "；"
 		}
-		view.Error += *message
+		view.Error += message
 	}
 	return view
 }
@@ -241,7 +244,7 @@ func runDesktop(env environment, stdout, stderr io.Writer) error {
 			}
 		}
 	}
-	if data, err := os.ReadFile(filepath.Join(env.root, "updates", "helper-result.json")); err == nil && len(data) <= 65536 {
+	if data, err := readHelperResult(filepath.Join(env.root, "updates", "helper-result.json")); err == nil && len(data) <= 65536 {
 		var result struct {
 			Error string `json:"error"`
 		}
@@ -269,14 +272,28 @@ func runDesktop(env environment, stdout, stderr io.Writer) error {
 	return err
 }
 
+// 旧版助手退出后，新版或杀软可能短暂持有结果文件。
+// 只容忍 Windows 共享冲突并做有界重试，避免把瞬时读失败误报成更新失败。
+func readHelperResult(path string) ([]byte, error) {
+	deadline := time.Now().Add(time.Second)
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil || !errors.Is(err, syscall.Errno(32)) || time.Now().After(deadline) {
+			return data, err
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
 func (desktop *desktop) ready(launch lifecycle.Launch, stdout io.Writer) {
 	desktop.view = ui.New(desktopActions{Controller: desktop.controller, host: desktop})
 	title := "ToolNest"
 	if desktop.env.testing() {
 		title = "ToolNest 更新测试版"
 	}
-	desktop.window = mygo.NewWindow(mygo.WindowOptions{Title: title, Width: 1180, Height: 780,
-		MinWidth: 620, MinHeight: 520, Hidden: true, Vibrancy: mygo.VibrancySidebar, Content: desktop.view.Content()})
+	options := desktop.view.WindowOptions(title)
+	options.Hidden = true
+	desktop.window = mygo.NewWindow(options)
 	if err := desktop.window.SetIcon(brand.PNG(256, false)); err != nil {
 		desktop.report(fmt.Errorf("应用图标未能设置: %w", err))
 	}
@@ -364,6 +381,10 @@ func (desktop *desktop) report(err error) {
 	if err == nil {
 		return
 	}
+	if errors.Is(err, lifecycle.ErrTrayUnavailable) {
+		desktop.reportTrayError(err)
+		return
+	}
 	fmt.Fprintln(desktop.stderr, err)
 	message := err.Error()
 	if strings.Contains(message, "Windows notification-area icon could not be verified") {
@@ -378,10 +399,23 @@ func (desktop *desktop) report(err error) {
 }
 
 func (desktop *desktop) errorText() string {
+	var messages []string
 	if value := desktop.systemError.Load(); value != nil {
-		return *value
+		messages = append(messages, *value)
 	}
-	return ""
+	if value := desktop.trayError.Load(); value != nil {
+		messages = append(messages, *value)
+	}
+	return strings.Join(messages, "；")
+}
+
+func (desktop *desktop) reportTrayError(err error) {
+	message := err.Error()
+	if previous := desktop.trayError.Load(); previous != nil && *previous == message {
+		return
+	}
+	fmt.Fprintln(desktop.stderr, err)
+	desktop.trayError.Store(&message)
 }
 
 func (desktop *desktop) hide() error {
@@ -401,12 +435,10 @@ func (desktop *desktop) hide() error {
 
 func (desktop *desktop) syncTray() {
 	available := desktop.tray != nil && desktop.tray.Available()
-	wasAvailable := desktop.controller.View().TrayAvailable
 	desktop.controller.SetTrayAvailable(available)
 	if !available {
-		if wasAvailable || desktop.hidden {
-			desktop.show()
-		}
+		// 息屏后的托盘查询失败不等于用户要求打开窗口；恢复后重新发送最新状态。
+		desktop.trayStateValid = false
 		return
 	}
 	view := desktop.controller.View()
@@ -414,7 +446,10 @@ func (desktop *desktop) syncTray() {
 		tray.SetUpdateState(view.Update.State)
 	}
 	message := view.Status
-	integrationError := desktop.errorText()
+	integrationError := ""
+	if value := desktop.systemError.Load(); value != nil {
+		integrationError = *value
+	}
 	failed := view.Error != "" || view.Update.Error != "" || integrationError != ""
 	switch {
 	case view.Error != "":
@@ -430,13 +465,17 @@ func (desktop *desktop) syncTray() {
 	case view.Settings.ScheduleEnabled:
 		message += " · 下次备份 " + view.NextRun
 	}
-	if message != desktop.lastTrayState || failed != desktop.lastTrayFailed {
+	if !desktop.trayStateValid || message != desktop.lastTrayState || failed != desktop.lastTrayFailed {
 		if err := desktop.tray.SetState(message, failed); err != nil {
 			desktop.controller.SetTrayAvailable(false)
-			desktop.show()
-			desktop.report(err)
+			desktop.reportTrayError(err)
+			desktop.trayStateValid = false
+			return
 		}
 		desktop.lastTrayState, desktop.lastTrayFailed = message, failed
+		desktop.trayStateValid = true
+		// 托盘恢复只清除它自己的临时错误，不抹掉备份、更新或其他系统错误。
+		desktop.trayError.Store(nil)
 	}
 }
 

@@ -3,6 +3,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -14,12 +15,12 @@ import (
 // Controller 的状态归 UI 线程所有；New 不启动窗口、托盘或后台业务服务。
 type Controller struct {
 	actions            app.Actions
+	window             windowControls
 	view               app.View
 	events             chan func()
 	pending            string
 	localError         string
 	page               string
-	homeQuery          string
 	settingsSection    int
 	tab                int
 	narrowScope        int
@@ -65,6 +66,7 @@ type Controller struct {
 	initialBackup      bool
 	dismissedResult    string
 	resultShown        app.OperationResult
+	systemDark         bool
 }
 
 // New 创建可嵌入主代理窗口的界面。actions.View 必须提供线程安全的只读副本。
@@ -81,8 +83,18 @@ func New(actions app.Actions) *Controller {
 // Content 返回纯 Go 绘制内容，不创建 WebView，不接管主程序的服务生命周期。
 func (controller *Controller) Content() *native.Content { return native.View(controller.render) }
 
+// WindowOptions 让主入口和独立 UI 共用窗口外观，避免出现两层标题栏。
+func (controller *Controller) WindowOptions(title string) mygo.WindowOptions {
+	return mygo.WindowOptions{
+		Title: title, Width: 1180, Height: 780, MinWidth: 620, MinHeight: 520,
+		TitleBarStyle: mygo.TitleBarHidden, HideWindowButtons: true,
+		Vibrancy: mygo.VibrancyAcrylic, Content: controller.Content(),
+	}
+}
+
 // AttachWindow 接入关闭确认。主代理仍负责实现 RequestClose、托盘与安全退出。
 func (controller *Controller) AttachWindow(window *mygo.Window) func() {
+	controller.window = window
 	return window.OnClose(func(event *mygo.CloseEvent) {
 		event.PreventDefault()
 		controller.RequestClose()
@@ -122,11 +134,7 @@ func Run(actions app.Actions) error {
 	}
 	controller := New(actions)
 	mygo.App.WhenReady(func() {
-		window := mygo.NewWindow(mygo.WindowOptions{
-			Title: "ToolNest", Width: 1180, Height: 780,
-			MinWidth: 620, MinHeight: 520, Vibrancy: mygo.VibrancySidebar,
-			Content: controller.Content(),
-		})
+		window := mygo.NewWindow(controller.WindowOptions("ToolNest"))
 		controller.AttachWindow(window)
 	})
 	return mygo.App.Run()
@@ -194,223 +202,253 @@ drained:
 }
 
 func (controller *Controller) render(context *native.Context) {
+	ensureMisans()
 	controller.synchronize()
+	controller.shortcuts(context)
 	context.After(250 * time.Millisecond)
-	theme := *context.Theme()
-	switch controller.view.Settings.Theme {
-	case "light":
-		theme = *native.LightTheme()
-	case "dark":
-		theme = *native.DarkTheme()
-	}
-	theme = refinedTheme(&theme)
-	context.SetTheme(&theme)
+	controller.systemDark = context.Theme().Dark
+	context.SetTheme(controller.renderTheme())
 	width, _ := context.Size()
-	if context.Vibrancy() {
-		context.Root().Background(native.Transparent)
-	}
-	shell := native.Column(context.Key("shell")).Fill().Background(theme.Background)
-	if context.Vibrancy() {
-		// 壳层必须透明，否则顶栏的半透明材质只会叠在本应用的实底上。
-		shell.Background(native.Transparent)
-	}
-	shell.Children(func() {
-		controller.header(context, width)
-		native.Column(context.Key("workspace")).Grow(1).MinHeight(0).FillWidth().Background(theme.Background).Children(func() {
-			controller.updateNotice(context)
-			controller.operationNotice(context)
-			if controller.page == "home" {
-				controller.homePage(context, width)
-			} else {
-				controller.topbar(context, width)
-				native.Column(context.Key(controller.page)).Grow(1).MinHeight(0).Padding(0, 24, 16, 24).Gap(14).Children(func() {
-					if controller.page == "settings" {
-						controller.settingsPage(context)
-						return
-					}
-					switch controller.tab {
-					case 0:
-						controller.currentPage(context, width)
-					case 1:
-						controller.snapshotsPage(context, width)
-					case 2:
-						controller.schedulePage(context)
-					}
-				})
-			}
-			if controller.page != "settings" {
-				controller.statusbar(context)
-			}
-			controller.exitNotice(context)
+	contentWidth := width - sidebarWidth(width)
+	// 根背景由应用完整绘制，内部磨砂不再依赖系统是否允许透明窗口。
+	ambientBackdrop(context)
+	// 侧栏与工作面悬浮在同一环境底上；正文不再盖实底，否则毛玻璃只剩一圈装饰。
+	native.Row(context.Key("shell")).Fill().Gap(0).AlignItems(native.Stretch).Children(func() {
+		controller.sidebar(context, width)
+		frostedSurface(context, native.Column(context.Key("workspace")).Grow(1).MinWidth(0).MinHeight(0).
+			Margin(12, 12, 12, 0).Radius(20).Clip().Gap(0), false).Children(func() {
+			controller.topbar(context, contentWidth)
+			controller.feedback(context)
+			native.Column(context.Key("workspace-content")).Grow(1).MinWidth(0).MinHeight(0).Children(func() {
+				if controller.page == "home" {
+					controller.homePage(context, contentWidth)
+				} else {
+					// 非首页仍让内容区占满可用高度，长表格自行滚动；内部面板按内容或表格单独决定高度。
+					native.Column(context.Key(controller.page)).Grow(1).MinHeight(0).Padding(0, contentInset(contentWidth), 10, contentInset(contentWidth)).Gap(6).Children(func() {
+						if controller.page == "settings" {
+							controller.settingsPage(context)
+							return
+						}
+						switch controller.tab {
+						case 0:
+							controller.currentPage(context, contentWidth)
+						case 1:
+							controller.snapshotsPage(context, contentWidth)
+						case 2:
+							controller.schedulePage(context)
+						case 3:
+							controller.records(context)
+						}
+					})
+				}
+			})
 			controller.footer(context)
 		})
 	})
 	controller.dialogs(context)
 }
 
-func (controller *Controller) header(context *native.Context, width float32) {
-	theme := context.Theme()
-	bar := native.Row(context.Key("top-navigation")).FillWidth().Height(76).Padding(0, 28).Gap(16)
-	if context.Vibrancy() {
-		bar.Background(theme.Surface.Alpha(0.84))
-	} else {
-		bar.Background(panelColor(theme))
+// renderTheme 从当前视图生成主题；独立成函数便于字号档位回归直接断言。
+func (controller *Controller) renderTheme() *native.Theme {
+	// 显式浅色/深色优先；跟随系统时沿用绘制上下文的明暗。
+	source := native.LightTheme()
+	if controller.systemDark {
+		source = native.DarkTheme()
 	}
-	bar.Children(func() {
-		brand := native.Button(context.Key("brand"), "").Label("返回工具空间").Border(0, native.Transparent).Background(native.Transparent).Padding(0).Gap(10)
-		brand.Children(func() {
-			native.Row(context).Width(36).Height(36).Justify(native.Center).Background(theme.Accent).Radius(11).Children(func() {
-				native.Icon(context, nestIcon).Width(24).Height(24).TextColor(theme.AccentText)
-			})
-			native.Column(context).Gap(2).Children(func() {
-				native.Text(context, "ToolNest").Font("Segoe UI").FontSize(18).FontWeight(600)
-				if width >= 780 {
-					label := "你的桌面工具空间"
-					if controller.view.Isolated {
-						label = "更新测试版 · 使用合成 PATH"
-					}
-					native.Text(context, label).FontSize(11).TextColor(theme.TextMuted)
-				}
-			})
-		})
-		if brand.Clicked() {
-			controller.page = "home"
-		}
-		native.Spacer(context)
-		// 复用原生按钮的焦点、键盘和可访问性；胶囊只改变外观，不手写点击区域。
-		native.Row(context.Key("navigation")).Gap(3).Padding(4).Radius(22).Background(theme.Surface).Children(func() {
-			for _, item := range []struct {
-				label, page string
-				tab         int
-			}{{"工具空间", "home", 0}, {"PATH 保护", "path", 0}, {"快照", "path", 1}, {"自动备份", "path", 2}} {
-				selected := controller.page == item.page && (item.page == "home" || controller.tab == item.tab)
-				button := native.Button(context.Key(item.label), item.label).Height(34).FontSize(13).Padding(0, 14).Radius(17).Border(0, native.Transparent)
-				if width < 780 {
-					button.Padding(0, 8).FontSize(11)
-				}
-				if selected {
-					button.Background(panelColor(theme)).TextColor(mistLink(theme)).FontWeight(600).Shadow(0, 1, 3, 0, native.Hex("#203a50").Alpha(0.08))
-				} else {
-					button.Background(native.Transparent).TextColor(theme.TextMuted)
-				}
-				if button.Clicked() {
-					controller.page, controller.tab = item.page, item.tab
-				}
-			}
-		})
-		native.Spacer(context)
-		settings := native.Button(context.Key("settings-nav"), "").Label("应用设置").Tooltip("应用设置").Width(40).Height(40).Border(0, native.Transparent).Padding(10).Background(native.Transparent)
-		if controller.page == "settings" {
-			settings.Background(theme.SurfaceHover)
-		}
-		settings.Children(func() {
-			native.Icon(context, settingsIcon).Width(18).Height(18).TextColor(mistLink(theme))
-		})
-		if settings.Clicked() {
-			controller.ShowSettings()
-		}
-	})
+	if controller.view.Settings.Theme == "light" {
+		source = native.LightTheme()
+	} else if controller.view.Settings.Theme == "dark" {
+		source = native.DarkTheme()
+	}
+	theme := refinedTheme(source, controller.view.Settings)
+	return &theme
 }
 
 func (controller *Controller) topbar(context *native.Context, width float32) {
 	theme := context.Theme()
-	bar := native.Row(context.Key("topbar")).Height(96).Padding(16, 26).Gap(8)
-	_, height := context.Size()
-	compact := height < 640
-	if compact {
-		bar.Height(72).Padding(12, 24)
-	}
-	if context.Vibrancy() {
-		bar.Background(theme.Background.Alpha(0.92))
-	} else {
-		bar.Background(theme.Background)
-	}
+	bar := chromeSurface(context, native.Row(context.Key("topbar")).Height(52).
+		Padding(8, contentInset(width)).Gap(8).AlignItems(native.Center).DragWindow())
 	bar.Children(func() {
-		title, description := "PATH 保护", "只读查看注册表原值 · 备份用户与系统两个范围"
+		title := "PATH 保护"
 		if controller.tab == 1 {
-			title, description = "快照时光机", "留住每一个好状态 · 比较后再恢复"
+			title = "快照"
 		} else if controller.tab == 2 {
-			title, description = "自动备份", "有变化时留一份快照，没有变化时安静守候"
+			title = "自动备份"
+		} else if controller.tab == 3 {
+			title = "活动记录"
 		}
 		if controller.page == "settings" {
-			title, description = "应用设置", "让 ToolNest 按你的习惯工作"
+			title = "设置"
+		} else if controller.page == "home" {
+			title = "概览"
 		}
-		if width < 780 && controller.page != "settings" {
-			description = "只读查看 · 保留原始内容"
-		}
-		native.Column(context).Grow(1).MinWidth(0).Gap(6).Children(func() {
-			native.Text(context, title).FontSize(24).FontWeight(600).SingleLine()
-			if !compact {
-				native.Text(context, description).FontSize(13).TextColor(theme.TextMuted).SingleLine()
+		native.Text(context, title).FontSize(pageTitleSize(context)).FontWeight(500).Grow(1).MinWidth(0).SingleLine().TextColor(theme.Text)
+		if controller.page != "settings" && controller.page != "home" {
+			refresh, backup := "刷新 PATH", "立即备份"
+			if width < 580 {
+				refresh, backup = "刷新", "备份"
 			}
-		})
-		if controller.page == "settings" {
-			return
-		}
-		if controller.tab != 0 {
-			if native.Button(context.Key("back-current"), "当前 PATH").Height(34).FontSize(12).Border(0, native.Transparent).Clicked() {
-				controller.tab = 0
+			if quietButton(context, refresh, controlOptions{key: "refresh", label: "刷新 PATH", icon: refreshIcon, disabled: controller.busy()}).Clicked() {
+				controller.launch("读取 PATH", controller.actions.Refresh)
+			}
+			if primaryButton(context, backup, controlOptions{key: "backup", label: "立即备份", icon: backupIcon, disabled: controller.busy()}).Clicked() {
+				controller.launch("创建快照", controller.actions.Backup)
 			}
 		}
-		refresh, backup := "刷新 PATH", "立即备份"
-		if width < 780 {
-			refresh, backup = "刷新", "备份"
+		controller.captionButtons(context)
+	})
+}
+
+// 同时只展开一条反馈；被覆盖的结果与更新保留底栏入口，不挤占主工作区。
+func (controller *Controller) feedbackKind() string {
+	switch {
+	case controller.view.PendingExit != "":
+		return "exit"
+	case controller.localError != "" || len(controller.view.Problems) > 0 || controller.view.Error != "":
+		return "error"
+	case controller.updateMessage() != "" && !(controller.page == "settings" && controller.settingsSection == 4):
+		return "update"
+	default:
+		return ""
+	}
+}
+
+func (controller *Controller) feedback(context *native.Context) {
+	switch controller.feedbackKind() {
+	case "exit":
+		controller.exitNotice(context)
+	case "error":
+		controller.statusbar(context)
+	case "update":
+		controller.updateNotice(context)
+	}
+}
+
+func (controller *Controller) footer(context *native.Context) {
+	kind := controller.feedbackKind()
+	update := kind != "update" && controller.updateMessage() != "" && !(controller.page == "settings" && controller.settingsSection == 4)
+	result := controller.view.Result.ID != "" && controller.view.Result.ID != controller.dismissedResult
+	duplicateResultStatus := false
+	err := controller.view.Error
+	if controller.localError != "" {
+		err = controller.localError
+	}
+	hiddenError := kind != "error" && (err != "" || len(controller.view.Problems) > 0)
+	draft := controller.draft != controller.base && controller.page != "settings" && !(controller.page == "path" && controller.tab == 2)
+	status := controller.view.Busy
+	if controller.pending != "" {
+		status = controller.pending
+	}
+	if status == "" && controller.view.Status != "就绪" {
+		status = controller.view.Status
+		previousResult := controller.view.Result
+		// 仅去掉同一次备份／恢复的重复回执，后续连接测试和设置保存仍需明确反馈。
+		if previousResult.ID != "" && (status == previousResult.Title || status == previousResult.Message || previousResult.Operation != "" && strings.HasPrefix(status, previousResult.Operation)) {
+			status = ""
+			duplicateResultStatus = true
 		}
-		if native.Button(context.Key("refresh"), refresh).Height(36).Padding(0, 14).Border(0, native.Transparent).Disabled(controller.busy()).Clicked() {
-			controller.launch("读取 PATH", controller.actions.Refresh)
+	}
+	if status == "" && !update && !result && !hiddenError && !draft {
+		return
+	}
+	width, _ := context.Size()
+	chromeSurface(context, native.Row(context.Key("footer")).FillWidth().MinHeight(30).
+		Padding(3, contentInset(width-sidebarWidth(width))).Gap(6).Wrap().BorderWidth(1, 0, 0, 0)).Children(func() {
+		if status != "" {
+			native.Text(context, status).FontSize(detailSize(context)).TextColor(context.Theme().TextMuted).SingleLine().Grow(1).MinWidth(0).Role(native.RoleStatus)
+		} else if result && duplicateResultStatus && kind != "error" {
+			// 只有业务状态是同一次操作的重复回执时，才在状态栏保留结果标题；
+			// 错误优先级和后续连接测试回执都不会被旧结果文字挤掉。
+			native.Text(context, controller.view.Result.Title).FontSize(detailSize(context)).TextColor(context.Theme().Text).SingleLine().Grow(1).MinWidth(0).Role(native.RoleStatus).Tooltip(controller.view.Result.Message)
+		} else {
+			native.Spacer(context)
 		}
-		if native.PrimaryButton(context.Key("backup"), backup).Height(36).Padding(0, 16).Disabled(controller.busy()).Clicked() {
-			controller.launch("创建快照", controller.actions.Backup)
+		if hiddenError {
+			if quietButton(context, "错误详情", controlOptions{icon: shieldIcon, textColor: context.Theme().Warning}).Clicked() {
+				if len(controller.view.Problems) > 0 {
+					problem := controller.view.Problems[0]
+					err = problem.Title + "\n" + problem.Message + "\n" + problem.Details
+				}
+				controller.showText("错误详情", err)
+			}
+		}
+		if result {
+			if quietButton(context, "结果详情", controlOptions{icon: eyeIcon}).Clicked() {
+				controller.resultShown = controller.view.Result
+				controller.openModal("operation-result")
+			}
+			if resultSnapshot := controller.view.Result; resultSnapshot.SnapshotID != "" && resultSnapshot.Outcome == "success" {
+				label := "查看本次快照"
+				if resultSnapshot.Operation == "恢复 PATH" {
+					label = "查看恢复结果"
+				}
+				if quietButton(context, label, controlOptions{key: "footer-result-snapshot", icon: archiveIcon}).Clicked() {
+					if resultSnapshot.Operation == "恢复 PATH" {
+						controller.resultShown = resultSnapshot
+						controller.openModal("operation-result")
+					} else {
+						controller.openSnapshot(resultSnapshot.SnapshotID)
+					}
+				}
+			}
+		}
+		if update {
+			if quietButton(context, "查看更新", controlOptions{icon: updateIcon}).Clicked() {
+				controller.ShowUpdates()
+			}
+		}
+		if draft {
+			if quietButton(context, "设置未保存", controlOptions{}).Clicked() {
+				controller.ShowSettings()
+			}
+		}
+		if result {
+			if quietButton(context, "收起", controlOptions{label: "收起操作结果"}).Clicked() {
+				controller.dismissedResult = controller.view.Result.ID
+			}
 		}
 	})
 }
 
 func (controller *Controller) statusbar(context *native.Context) {
-	if len(controller.view.Problems) > 0 {
+	if controller.localError == "" && len(controller.view.Problems) > 0 {
 		problem := controller.view.Problems[0]
-		native.Row(context.Key("actionable-problem")).Margin(0, 24, 8, 24).Padding(10, 12).Gap(10).Radius(8).Background(context.Theme().Surface).Children(func() {
-			native.Column(context).Grow(1).MinWidth(0).Gap(4).Children(func() {
-				native.Text(context, problem.Title).FontSize(13).FontWeight(600).Role(native.RoleAlert)
-				native.Text(context, problem.Message).FontSize(12).TextColor(context.Theme().TextMuted)
+		noticePanel(context, "actionable-problem").Children(func() {
+			native.Column(context).MinWidth(0).Gap(4).Children(func() {
+				native.Text(context, problem.Title).FontSize(controlTextSize(context)).FontWeight(600).Role(native.RoleAlert)
+				native.Text(context, problem.Message).FontSize(detailSize(context)).TextColor(context.Theme().TextMuted).SingleLine().Tooltip(problem.Message)
 			})
-			label := "重新读取"
-			if problem.Action == "data" {
-				label = "检查数据目录"
-			}
-			if native.Button(context, label).Height(32).Disabled(controller.busy()).Clicked() {
+			native.Row(context).Gap(8).Wrap().Children(func() {
+				label := "重新读取"
 				if problem.Action == "data" {
-					controller.page, controller.settingsSection = "settings", 3
-				} else {
-					controller.launch("重新读取", controller.actions.Refresh)
+					label = "检查数据目录"
 				}
-			}
-			if native.Button(context, "查看原因").Height(32).Clicked() {
-				controller.showText(problem.Title, problem.Message+"\n\n"+problem.Details)
-			}
+				if secondaryButton(context, label, controlOptions{key: "problem-action", height: 34, disabled: controller.busy()}).Clicked() {
+					if problem.Action == "data" {
+						controller.page, controller.settingsSection = "settings", 3
+					} else {
+						controller.launch("重新读取", controller.actions.Refresh)
+					}
+				}
+				if secondaryButton(context, "查看原因", controlOptions{key: "problem-detail", icon: eyeIcon, height: 34}).Clicked() {
+					controller.showText(problem.Title, problem.Message+"\n\n"+problem.Details)
+				}
+			})
 		})
-	}
-	status := controller.view.Status
-	if controller.view.Busy != "" {
-		status = controller.view.Busy
-	}
-	if controller.pending != "" {
-		status = controller.pending
+		return
 	}
 	err := controller.view.Error
 	if controller.localError != "" {
 		err = controller.localError
 	}
-	if err != "" && len(controller.view.Problems) == 0 {
-		native.Row(context.Key("error")).Margin(0, 24, 12, 24).Padding(6, 12).Gap(8).Radius(8).Background(context.Theme().Surface).Children(func() {
+	if err != "" {
+		noticePanel(context, "error").Row().Gap(8).Children(func() {
 			native.Text(context, "!").FontWeight(600).TextColor(context.Theme().Warning).Width(12)
-			native.Text(context, errorSummary(err)).Role(native.RoleAlert).FontSize(12).TextColor(context.Theme().TextMuted).SingleLine().Grow(1).MinWidth(0)
-			if native.Button(context, "错误详情").Height(28).FontSize(12).Border(0, native.Transparent).Clicked() {
+			native.Text(context, errorSummary(err)).Role(native.RoleAlert).FontSize(detailSize(context)).TextColor(context.Theme().TextMuted).SingleLine().Grow(1).MinWidth(0)
+			if secondaryButton(context, "错误详情", controlOptions{key: "error-detail", icon: eyeIcon, height: 32}).Clicked() {
 				controller.showText("错误详情", err)
 			}
 		})
-	}
-	if status != "" && !(status == "就绪" && err != "") {
-		native.Text(context.Key("status"), status).Role(native.RoleStatus).FontSize(11).TextColor(context.Theme().TextMuted).Padding(0, 24, 10, 24).SingleLine()
 	}
 }
 

@@ -20,6 +20,10 @@ func (controller *Controller) SaveSettings(settings Settings) {
 }
 
 func (controller *Controller) saveSettings(ctx context.Context, settings Settings) error {
+	// 兼容没有字号字段的旧设置文件；后续校验、落盘和视图都以补齐后的值为准。
+	if settings.TextSize == "" {
+		settings.TextSize = "standard"
+	}
 	if err := validateSettings(settings); err != nil {
 		return err
 	}
